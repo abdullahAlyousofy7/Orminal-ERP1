@@ -2539,5 +2539,10 @@ model PurchaseCreditNoteLine {
 }
 
 // =============================================================================
+
 // GENERAL DEFINITIONS / LOOKUPS (Book 1 Shared Kernel) 2450-2474
+// =============================================================================
+
+// GENERAL DEFINITIONS / LOOKUPS (Book 1 Shared Kernel)
+// Note: GeneralDefinition model is defined once above (Book 3 §3.8 section).
 // =============================================================================
