@@ -1,21 +1,30 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/inventory-requisitions
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
 
-    const where: any = {}
-    if (q) where.code = { contains: q }
-    if (status) where.status = status
+    const baseWhere: any = {}
+    if (q) baseWhere.code = { contains: q }
+    if (status) baseWhere.status = status
 
-    // We can query stock reservations or purchase requests / delivery drafts.
-    // For standalone inventory requisitions, let's use stockReservation or delivery draft.
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
+
     const [data, total] = await Promise.all([
       db.delivery.findMany({
         where,
@@ -55,23 +64,37 @@ export async function GET(req: Request) {
 // POST /api/erp/inventory-requisitions
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     const warehouseId = body.storehouseId || body.warehouseId
     if (!warehouseId) return badRequest('المستودع مطلوب')
     if (!body.items || body.items.length === 0) return badRequest('المنتجات مطلوبة')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('لم يتم العثور على شركة بالمنظومة')
+    const productIds = body.items.map((it: any) => it.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      warehouseId,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
 
-    const code = await nextNumber('delivery', company.id)
+    const wh = await db.warehouse.findFirst({
+      where: { id: warehouseId, branch: { companyId: auth.companyId } },
+      select: { branchId: true },
+    })
+
+    const code = await nextNumber('delivery', auth.companyId, wh?.branchId)
 
     const reqItem = await db.delivery.create({
       data: {
-        companyId: company.id,
+        companyId: auth.companyId,
+        branchId: wh?.branchId,
         code,
         warehouseId,
         status: 'draft',
         notes: body.note || body.notes || null,
+        createdBy: auth.userId,
         lines: {
           create: body.items.map((it: any) => ({
             productId: it.productId,

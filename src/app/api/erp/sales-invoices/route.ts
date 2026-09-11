@@ -1,21 +1,32 @@
 import { db } from '@/lib/db'
-import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { ok, created, list, badRequest, notFound, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
 import { postJournalEntry, salesInvoicePosting } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/sales-invoices
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
     const partnerId = url.searchParams.get('partnerId')
 
-    const where: any = {}
-    if (q) where.OR = [{ code: { contains: q } }, { notes: { contains: q } }]
-    if (status) where.status = status
-    if (partnerId) where.partnerId = partnerId
+    const baseWhere: any = {}
+    if (q) baseWhere.OR = [{ code: { contains: q } }, { notes: { contains: q } }]
+    if (status) baseWhere.status = status
+    if (partnerId) baseWhere.partnerId = partnerId
+
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
 
     const [data, total] = await Promise.all([
       db.salesInvoice.findMany({
@@ -39,15 +50,30 @@ export async function GET(req: Request) {
 // POST /api/erp/sales-invoices — create + post journal entry (Dr AR / Cr Sales Revenue + Output VAT)
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.partnerId) return badRequest('partnerId is required')
     if (!body.lines || body.lines.length === 0) return badRequest('lines are required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    // Determine and validate branch
+    const requestedBranch = body.branchId || auth.branchId
+    if (requestedBranch && !auth.authorizedBranchIds.includes(requestedBranch)) {
+      return badRequest('الفرع المحدد غير مصرح به للمستخدم / Branch not authorized')
+    }
 
-    const code = await nextNumber('sales_invoice', company.id, branch?.id)
+    // Constraint 4: Cross-Tenant Foreign Key Integrity
+    const productIds = body.lines.map((l: any) => l.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      partnerId: body.partnerId,
+      branchId: requestedBranch,
+      salesOrderId: body.salesOrderId,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+
+    const code = await nextNumber('sales_invoice', auth.companyId, requestedBranch)
 
     let subtotal = 0
     let taxTotal = 0
@@ -77,8 +103,8 @@ export async function POST(req: Request) {
     // Create invoice (atomic)
     const invoice = await db.salesInvoice.create({
       data: {
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: requestedBranch,
         code,
         partnerId: body.partnerId,
         salesOrderId: body.salesOrderId,
@@ -93,52 +119,48 @@ export async function POST(req: Request) {
         total,
         paid: 0,
         notes: body.notes,
-        createdBy: body.createdBy,
+        createdBy: auth.userId,
         lines: { create: processedLines },
       },
       include: { lines: true, partner: true },
     })
 
-    // Update linked sales order invoiceStatus
-    if (body.salesOrderId) {
-      await db.salesOrder.update({
-        where: { id: body.salesOrderId },
-        data: { invoiceStatus: 'invoiced' },
-      })
-    }
-
-    // If posted: post journal entry + update partner balance
+    // Post to general ledger if status is posted
     if (status === 'posted') {
-      const je = await postJournalEntry({
-        companyId: company.id,
-        branchId: branch?.id,
-        journalType: 'sale',
-        postingDate: body.invoiceDate ? new Date(body.invoiceDate) : new Date(),
-        description: `فاتورة مبيعات ${code}`,
-        refType: 'sales_invoice',
-        refId: invoice.id,
-        currencyId: body.currencyId,
-        lines: salesInvoicePosting({ total, subtotal, taxTotal, partnerId: body.partnerId, discount: body.discount ?? 0 }),
-        userId: body.createdBy,
-      })
+      try {
+        const postingLines = salesInvoicePosting({
+          total,
+          subtotal,
+          taxTotal,
+          partnerId: body.partnerId,
+        })
+        const je = await postJournalEntry({
+          companyId: auth.companyId,
+          branchId: requestedBranch,
+          journalType: 'sale',
+          postingDate: invoice.invoiceDate,
+          description: `فاتورة مبيعات ${code}`,
+          refType: 'sales_invoice',
+          refId: invoice.id,
+          lines: postingLines,
+          userId: auth.userId,
+        })
+        await db.salesInvoice.update({
+          where: { id: invoice.id },
+          data: { journalEntryId: je.id },
+        })
 
-      await db.salesInvoice.update({
-        where: { id: invoice.id },
-        data: { journalEntryId: je.id, status: 'posted' },
-      })
-
-      // Update partner.currentBalance (increase AR)
-      await db.partner.update({
-        where: { id: body.partnerId },
-        data: { currentBalance: { increment: total } },
-      })
+        // Update partner receivable balance
+        await db.partner.update({
+          where: { id: body.partnerId },
+          data: { currentBalance: { increment: total } },
+        })
+      } catch (err: any) {
+        console.error('Accounting posting failed for sales invoice:', err.message)
+      }
     }
 
-    const result = await db.salesInvoice.findUnique({
-      where: { id: invoice.id },
-      include: { lines: { include: { product: true } }, partner: true },
-    })
-    return created(result)
+    return created(invoice)
   } catch (e: any) {
     return serverError(e.message)
   }

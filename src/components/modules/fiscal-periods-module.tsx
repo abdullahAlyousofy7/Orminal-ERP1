@@ -18,9 +18,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogB
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DatePicker } from '@/components/ui/date-picker'
-import { CalendarClock, Plus, Download, Lock, Unlock, AlertCircle, Pencil } from 'lucide-react'
+import { Card } from '@/components/ui/card'
+import { CalendarClock, Plus, Download, Lock, Unlock, AlertCircle, Pencil, Search, ShieldAlert } from 'lucide-react'
 
-export function FiscalPeriodsModule() {
+export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean } = {}) {
   const { t, isRTL, dir: rawDir } = useT()
   const dir = rawDir as 'ltr' | 'rtl'
   const qc = useQueryClient()
@@ -61,11 +62,15 @@ export function FiscalPeriodsModule() {
     }
   }
 
-  const { data: yearsData, isLoading } = useQuery<any>({
+  const { data: yearsData, isLoading, error } = useQuery<any>({
     queryKey: ['fiscal-years'],
     queryFn: async () => {
       const r = await fetch('/api/erp/fiscal-years')
-      if (!r.ok) throw new Error()
+      if (r.status === 403) throw new Error('FORBIDDEN')
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        throw new Error(err.message || err.error || `HTTP ${r.status}`)
+      }
       return r.json()
     },
   })
@@ -98,9 +103,12 @@ export function FiscalPeriodsModule() {
           autoPeriods: yearForm.autoPeriods,
         }),
       })
+      if (r.status === 403) {
+        throw new Error(txt('صلاحية غير كافية: لا تملك صلاحية إنشاء سنة مالية لهذه المؤسسة', 'Insufficient permission: you cannot create a fiscal year for this company'))
+      }
       if (!r.ok) {
-        const e = await r.json()
-        throw new Error(e.error || 'error')
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.message || e.error || txt('فشل في إنشاء السنة المالية', 'Failed to create fiscal year'))
       }
       return r.json()
     },
@@ -132,9 +140,12 @@ export function FiscalPeriodsModule() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      if (r.status === 403) {
+        throw new Error(txt('صلاحية غير كافية: لا تملك صلاحية حفظ أو تعديل الفترة المالية', 'Insufficient permission: you cannot save or modify fiscal periods'))
+      }
       if (!r.ok) {
-        const e = await r.json()
-        throw new Error(e.error || 'error')
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.message || e.error || txt('فشل في حفظ الفترة المالية', 'Failed to save fiscal period'))
       }
       return r.json()
     },
@@ -159,14 +170,20 @@ export function FiscalPeriodsModule() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state }),
       })
-      if (!r.ok) throw new Error()
+      if (r.status === 403) {
+        throw new Error(txt('صلاحية غير كافية لتعديل حالة الفترة المالية', 'Insufficient permission to change period status'))
+      }
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}))
+        throw new Error(e.message || e.error || txt('فشل في تحديث حالة الفترة', 'Failed to update period state'))
+      }
       return r.json()
     },
     onSuccess: () => {
       toast.success(txt('تم تحديث حالة الفترة بنجاح', 'Period state updated successfully'))
       qc.invalidateQueries({ queryKey: ['fiscal-years'] })
     },
-    onError: () => toast.error(txt('حدث خطأ', 'An error occurred')),
+    onError: (e: any) => toast.error(e.message || txt('حدث خطأ', 'An error occurred')),
   })
 
   const handleAddYear = () => {
@@ -219,79 +236,29 @@ export function FiscalPeriodsModule() {
       }))
     )
 
-  return (
-    <ModuleShell
-      title={txt('الفترات المالية', 'Financial Periods')}
-      description={txt('إدارة السنوات والفترات المالية ', 'Manage fiscal years, periods ')}
-      icon={<CalendarClock className="size-5" />}
-      onSearch={setSearch}
-      searchValue={search}
-      searchPlaceholder={txt('بحث عن الفترات...', 'Search periods...')}
-      onExport={handleExport}
-      actions={
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleAddYear}
-            className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-9"
-          >
-            <Plus className="size-4" />
-            <span>{txt('إضافة سنة مالية', 'Add Fiscal Year')}</span>
-          </Button>
-          <Button
-            size="sm"
-            onClick={handleAddPeriod}
-            className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-9"
-          >
-            <Plus className="size-4" />
-            <span>{txt('إضافة فترة مالية', 'Add Financial Period')}</span>
-          </Button>
-        </div>
-      }
-      filters={
-        <div className="flex items-center gap-4 flex-wrap">
-          {/* Status Filter */}
-          <div className="flex items-center gap-2 min-w-[140px]">
-            <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-              {txt('الحالة:', 'Status:')}
-            </Label>
-            <Select value={statusFilter} onValueChange={setStatusFilter} dir={dir}>
-              <SelectTrigger className="h-9 w-[120px]" dir={dir}>
-                <SelectValue placeholder={txt('الحالة', 'Status')} />
-              </SelectTrigger>
-              <SelectContent dir={dir}>
-                <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
-                <SelectItem value="draft">{txt('مسودة', 'Draft')}</SelectItem>
-                <SelectItem value="open">{txt('مفتوح', 'Open')}</SelectItem>
-                <SelectItem value="closed">{txt('مغلق', 'Closed')}</SelectItem>
-                <SelectItem value="locked">{txt('مقفل', 'Locked')}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+  if (error?.message === 'FORBIDDEN') {
+    return (
+      <ModuleShell
+        title={txt('الفترات المالية', 'Financial Periods')}
+        description={txt('إدارة السنوات والفترات المالية', 'Manage fiscal years, periods')}
+        icon={<CalendarClock className="size-5" />}
+      >
+        <Card className="p-10 flex flex-col items-center gap-3 text-center border-destructive/20 bg-destructive/5">
+          <ShieldAlert className="size-10 text-destructive" />
+          <p className="font-semibold text-lg">{txt('صلاحية غير كافية', 'Insufficient permission')}</p>
+          <p className="text-sm text-muted-foreground max-w-md">
+            {txt(
+              'عرض وإدارة الفترات المالية يتطلب صلاحيات إدارية لتهيئة النظام للمستأجر الحالي. تواصل مع مدير النظام لمنحك الصلاحية.',
+              'Viewing and managing fiscal periods requires system configuration administrative permissions for the current tenant. Contact your system administrator.'
+            )}
+          </p>
+        </Card>
+      </ModuleShell>
+    )
+  }
 
-          {/* Year Filter */}
-          <div className="flex items-center gap-2 min-w-[160px]">
-            <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-              {txt('السنة:', 'Year:')}
-            </Label>
-            <Select value={yearFilter} onValueChange={setYearFilter} dir={dir}>
-              <SelectTrigger className="h-9 w-[140px]" dir={dir}>
-                <SelectValue placeholder={txt('السنة المالية', 'Fiscal Year')} />
-              </SelectTrigger>
-              <SelectContent dir={dir}>
-                <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
-                {years.map((y: any) => (
-                  <SelectItem key={y.id} value={y.id}>
-                    {y.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      }
-    >
+  const bodyContent = (
+    <>
       {/* KPI Section */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 mb-2">
         {isLoading ? (
@@ -706,6 +673,184 @@ export function FiscalPeriodsModule() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  )
+
+  if (embedded) {
+    return (
+      <div className="flex flex-col gap-4 w-full">
+        {/* Top Header & Actions Toolbar */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-2 border-b border-border/60">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-primary/10 text-primary">
+              <CalendarClock className="size-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold tracking-tight">{txt('الفترات المالية', 'Financial Periods')}</h2>
+              <p className="text-xs text-muted-foreground">{txt('إدارة السنوات والفترات المالية', 'Manage fiscal years, periods')}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExport}
+              className="gap-1.5 h-9"
+            >
+              <Download className="size-4" />
+              <span>{txt('تصدير', 'Export')}</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAddYear}
+              className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-9"
+            >
+              <Plus className="size-4" />
+              <span>{txt('إضافة سنة مالية', 'Add Fiscal Year')}</span>
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleAddPeriod}
+              className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-9"
+            >
+              <Plus className="size-4" />
+              <span>{txt('إضافة فترة مالية', 'Add Financial Period')}</span>
+            </Button>
+          </div>
+        </div>
+
+        {/* Search & Filters */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative sm:max-w-xs w-full">
+            <Search className="absolute inset-y-0 start-3 my-auto size-4 text-muted-foreground pointer-events-none" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={txt('بحث عن الفترات...', 'Search periods...')}
+              className="ps-9 h-9 text-xs"
+            />
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            {/* Status Filter */}
+            <div className="flex items-center gap-2 min-w-[140px]">
+              <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
+                {txt('الحالة:', 'Status:')}
+              </Label>
+              <Select value={statusFilter} onValueChange={setStatusFilter} dir={dir}>
+                <SelectTrigger className="h-9 w-[120px]" dir={dir}>
+                  <SelectValue placeholder={txt('الحالة', 'Status')} />
+                </SelectTrigger>
+                <SelectContent dir={dir}>
+                  <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
+                  <SelectItem value="draft">{txt('مسودة', 'Draft')}</SelectItem>
+                  <SelectItem value="open">{txt('مفتوح', 'Open')}</SelectItem>
+                  <SelectItem value="closed">{txt('مغلق', 'Closed')}</SelectItem>
+                  <SelectItem value="locked">{txt('مقفل', 'Locked')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Year Filter */}
+            <div className="flex items-center gap-2 min-w-[160px]">
+              <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
+                {txt('السنة:', 'Year:')}
+              </Label>
+              <Select value={yearFilter} onValueChange={setYearFilter} dir={dir}>
+                <SelectTrigger className="h-9 w-[140px]" dir={dir}>
+                  <SelectValue placeholder={txt('السنة المالية', 'Fiscal Year')} />
+                </SelectTrigger>
+                <SelectContent dir={dir}>
+                  <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
+                  {years.map((y: any) => (
+                    <SelectItem key={y.id} value={y.id}>
+                      {y.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+        {bodyContent}
+      </div>
+    )
+  }
+
+  return (
+    <ModuleShell
+      title={txt('الفترات المالية', 'Financial Periods')}
+      description={txt('إدارة السنوات والفترات المالية ', 'Manage fiscal years, periods ')}
+      icon={<CalendarClock className="size-5" />}
+      onSearch={setSearch}
+      searchValue={search}
+      searchPlaceholder={txt('بحث عن الفترات...', 'Search periods...')}
+      onExport={handleExport}
+      actions={
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleAddYear}
+            className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-9"
+          >
+            <Plus className="size-4" />
+            <span>{txt('إضافة سنة مالية', 'Add Fiscal Year')}</span>
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleAddPeriod}
+            className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-9"
+          >
+            <Plus className="size-4" />
+            <span>{txt('إضافة فترة مالية', 'Add Financial Period')}</span>
+          </Button>
+        </div>
+      }
+      filters={
+        <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-2 min-w-[140px]">
+            <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
+              {txt('الحالة:', 'Status:')}
+            </Label>
+            <Select value={statusFilter} onValueChange={setStatusFilter} dir={dir}>
+              <SelectTrigger className="h-9 w-[120px]" dir={dir}>
+                <SelectValue placeholder={txt('الحالة', 'Status')} />
+              </SelectTrigger>
+              <SelectContent dir={dir}>
+                <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
+                <SelectItem value="draft">{txt('مسودة', 'Draft')}</SelectItem>
+                <SelectItem value="open">{txt('مفتوح', 'Open')}</SelectItem>
+                <SelectItem value="closed">{txt('مغلق', 'Closed')}</SelectItem>
+                <SelectItem value="locked">{txt('مقفل', 'Locked')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2 min-w-[160px]">
+            <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
+              {txt('السنة:', 'Year:')}
+            </Label>
+            <Select value={yearFilter} onValueChange={setYearFilter} dir={dir}>
+              <SelectTrigger className="h-9 w-[140px]" dir={dir}>
+                <SelectValue placeholder={txt('السنة المالية', 'Fiscal Year')} />
+              </SelectTrigger>
+              <SelectContent dir={dir}>
+                <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
+                {years.map((y: any) => (
+                  <SelectItem key={y.id} value={y.id}>
+                    {y.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      }
+    >
+      {bodyContent}
     </ModuleShell>
   )
 }
+
+export default FiscalPeriodsModule

@@ -1,10 +1,14 @@
 import { db } from '@/lib/db'
 import { serverError, parsePagination } from '@/lib/erp/api-response'
 import { NextResponse } from 'next/server'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 // GET /api/erp/stock-quants — current stock on hand per product/warehouse/location
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const url = new URL(req.url)
     const warehouseId = url.searchParams.get('warehouseId')
@@ -17,7 +21,16 @@ export async function GET(req: Request) {
     const sortBy = url.searchParams.get('sortBy')
     const sortDir = url.searchParams.get('sortDir') === 'asc' ? 'asc' : 'desc'
 
-    const where: any = {}
+    const where: any = {
+      warehouse: {
+        branch: {
+          companyId: auth.companyId,
+          ...(!auth.isSuperAdmin && auth.authorizedBranchIds.length > 0
+            ? { id: { in: auth.authorizedBranchIds } }
+            : {}),
+        },
+      },
+    }
     if (warehouseId && warehouseId !== 'all') where.warehouseId = warehouseId
     if (productId) where.productId = productId
     if (categoryId && categoryId !== 'all') {

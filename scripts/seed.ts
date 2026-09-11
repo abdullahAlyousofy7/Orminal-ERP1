@@ -1,6 +1,7 @@
 // Enterprise ERP — Comprehensive Seed Script
 // Source: Volume 4 SDTA + Volume 2 Blueprint + Volume 3 FTS + Arabic Accounting Spec
 import { db } from '../src/lib/db'
+import { initializeStandardCatalog } from '../src/lib/erp/sequence-doc-service'
 import { scrypt, randomBytes } from 'crypto'
 import { promisify } from 'util'
 
@@ -404,6 +405,9 @@ async function main() {
   for (const n of notifs) {
     await db.notification.create({ data: { userId: admin.id, ...n } })
   }
+
+  // === Standard Sequence Document Types ===
+  await initializeStandardCatalog(company.id, admin.id)
 
   console.log('✅ Seed completed!')
   console.log(`   Company: ${company.code} (${company.nameAr})`)

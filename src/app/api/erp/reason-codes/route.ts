@@ -1,8 +1,12 @@
 import { db } from '@/lib/db'
 import { list, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)

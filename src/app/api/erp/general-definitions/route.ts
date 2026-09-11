@@ -12,9 +12,13 @@ import {
   createDefinition,
   seedInitialDefinitions,
 } from '@/lib/erp/general-definitions-service'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { searchParams } = new URL(req.url)
     const mode = searchParams.get('mode')
     const typeCode = searchParams.get('typeCode')
@@ -44,6 +48,9 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.typeCode) return badRequest('نوع التعريف (typeCode) مطلوب.')
     if (!body.code) return badRequest('رمز التعريف (code) مطلوب.')

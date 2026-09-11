@@ -1,11 +1,19 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.employee.findUnique({
-      where: { id },
+    const item = await db.employee.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         department: { select: { id: true, nameAr: true, nameEn: true } },
         jobPosition: { select: { id: true, code: true, nameAr: true, nameEn: true } },
@@ -21,12 +29,21 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.employee.findUnique({ where: { id } })
+    const exists = await db.employee.findFirst({ where: { id, companyId: auth.companyId } })
     if (!exists) return notFound('Employee not found')
 
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = body
+    const { id: _id, companyId: _c, tenantId: _t, createdAt: _c2, updatedAt: _u, ...rest } = body
+
+    if (rest.branchId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { branchId: rest.branchId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
     if (rest.hireDate) rest.hireDate = new Date(rest.hireDate)
     if (rest.terminationDate) rest.terminationDate = new Date(rest.terminationDate)
     if (rest.birthDate) rest.birthDate = new Date(rest.birthDate)
@@ -70,10 +87,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.employee.findUnique({ where: { id } })
+    const exists = await db.employee.findFirst({ where: { id, companyId: auth.companyId } })
     if (!exists) return notFound('Employee not found')
 
     // Soft terminate if has attendance / payroll history

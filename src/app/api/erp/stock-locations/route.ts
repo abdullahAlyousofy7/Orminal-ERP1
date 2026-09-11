@@ -1,14 +1,25 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const warehouseId = url.searchParams.get('warehouseId')
 
-    const where: any = {}
+    const where: any = {
+      warehouse: { branch: { companyId: auth.companyId } },
+    }
+
     if (q) {
       where.OR = [
         { code: { contains: q } },
@@ -36,9 +47,15 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
     if (!body.warehouseId) return badRequest('warehouseId is required')
+
+    const fkCheck = await verifyTenantForeignKeys(auth, { warehouseId: body.warehouseId })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
 
     let code = body.code
     if (!code) {

@@ -9,6 +9,8 @@ export type Capability =
   | 'canDelete'
   | 'canApprove'
   | 'canPost'
+  | 'canCancel'
+  | 'canReverse'
   | 'canExport'
   | 'canImport'
   | 'canPrint'

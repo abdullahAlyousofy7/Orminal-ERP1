@@ -10,20 +10,31 @@ import {
 } from '@/lib/erp/api-response'
 import {
   postJournalEntry,
-  reverseJournalEntry,
   validateBalanced,
 } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/journal-entries — list with includes
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'journal_entries', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const state = url.searchParams.get('state')
     const refType = url.searchParams.get('refType')
+    const requestedBranch = url.searchParams.get('branchId')
 
-    const where: any = {}
+    const baseWhere = scopedWhere(auth, { branchId: requestedBranch || undefined })
+    const where: any = { ...baseWhere }
+
     if (q) {
       where.OR = [
         { code: { contains: q } },
@@ -64,17 +75,37 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    const state = body.state ?? 'draft'
+    const requiredCapability = state === 'posted' ? 'canPost' : 'canCreate'
+
+    const auth = await requireAuthContext(req, { resource: 'journal_entries', capability: requiredCapability })
+    if (isAuthFailure(auth)) return auth
+
+    const branchId = body.branchId || (auth.authorizedBranchIds.length > 0 ? auth.authorizedBranchIds[0] : null)
+    if (branchId && !auth.authorizedBranchIds.includes(branchId)) {
+      return badRequest('Unauthorized branch specified')
+    }
 
     if (!body.lines || !Array.isArray(body.lines) || body.lines.length < 2) {
       return badRequest('At least 2 lines required')
     }
 
+    // Verify tenant FKs for partners and currency
+    const partnerIds = body.lines.map((l: any) => l.partnerId).filter(Boolean)
+    for (const pId of partnerIds) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { partnerId: pId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
+    if (body.currencyId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { currencyId: body.currencyId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
     // Resolve account codes → input format for posting engine
     const lines: any[] = body.lines.map((l: any) => ({
       accountCode: l.accountCode,
+      accountId: l.accountId,
       debit: Number(l.debit) || 0,
       credit: Number(l.credit) || 0,
       description: l.description,
@@ -89,96 +120,96 @@ export async function POST(req: Request) {
       return badRequest('UNBALANCED_JOURNAL: debit total must equal credit total', 'BR-FIN-001')
     }
 
-    const state = body.state ?? 'draft'
     const postingDate = body.postingDate ? new Date(body.postingDate) : new Date()
 
-    // BR-FIN-002: check period open
+    // BR-FIN-002: check period open in this company's fiscal year
     if (state === 'posted') {
       const period = await db.fiscalPeriod.findFirst({
-        where: { startDate: { lte: postingDate }, endDate: { gte: postingDate } },
+        where: {
+          fiscalYear: { companyId: auth.companyId },
+          startDate: { lte: postingDate },
+          endDate: { gte: postingDate },
+        },
       })
       if (period && period.state === 'closed') {
-        return badRequest('PERIOD_CLOSED: posting date is in a closed period', 'BR-FIN-002')
+        return badRequest(`PERIOD_CLOSED: period ${period.name} is closed for posting`, 'BR-FIN-002')
       }
     }
 
     if (state === 'posted') {
-      // Use the central posting engine (atomic, updates account balances)
-      const result = await postJournalEntry({
-        companyId: company.id,
-        branchId: branch?.id,
+      const entry = await postJournalEntry({
+        companyId: auth.companyId,
+        branchId: branchId || undefined,
         journalType: body.journalType ?? 'general',
         postingDate,
-        description: body.description || 'Manual journal entry',
+        description: body.description ?? 'Manual journal entry',
         refType: body.refType ?? 'manual',
         refId: body.refId,
         currencyId: body.currencyId,
         lines,
-        userId: body.userId,
+        userId: auth.userId,
       })
-      const entry = await db.journalEntry.findUnique({
-        where: { id: result.id },
-        include: { lines: { include: { account: true } } },
+      const full = await db.journalEntry.findUnique({
+        where: { id: entry.id },
+        include: {
+          lines: { include: { account: true, partner: true } },
+          journal: true,
+        },
       })
-      return created(entry)
+      return created(full)
     }
 
-    // Draft mode: create without posting
-    let journalId = body.journalId
-    if (!journalId && body.journalType) {
-      const journalMap: Record<string, string> = {
-        sale: 'SJ', purchase: 'PJ', cash: 'CJ', bank: 'BJ', general: 'GJ', opening: 'OJ', closing: 'CLJ',
-      }
-      const j = await db.journal.findUnique({ where: { code: journalMap[body.journalType] || 'GJ' } })
-      journalId = j?.id
-    }
+    // Create DRAFT entry
+    const count = await db.journalEntry.count({ where: { companyId: auth.companyId } })
+    const code = `JE-${new Date().getFullYear()}-${String(count + 1).padStart(6, '0')}`
 
-    const { nextNumber } = await import('@/lib/erp/number-sequence')
-    const code = await nextNumber('journal_entry', company.id, branch?.id, postingDate.getFullYear())
-
-    const totalDebit = lines.reduce((s, l) => s + l.debit, 0)
-    const totalCredit = lines.reduce((s, l) => s + l.credit, 0)
-
-    // Resolve account codes
-    const codes = [...new Set(lines.map((l) => l.accountCode))]
-    const accounts = await db.account.findMany({ where: { code: { in: codes } } })
-    const accountMap = new Map(accounts.map((a) => [a.code, a.id]))
+    // Resolve accounts for lines
+    const lineRecords: any[] = []
     for (const l of lines) {
-      if (!accountMap.has(l.accountCode)) return badRequest(`ACCOUNT_NOT_FOUND: ${l.accountCode}`)
+      let accId = l.accountId
+      if (!accId && l.accountCode) {
+        const acc = await db.account.findFirst({ where: { code: l.accountCode } })
+        if (acc) accId = acc.id
+      }
+      if (!accId) return badRequest(`Account not found for line: ${l.accountCode || l.accountId}`)
+      lineRecords.push({
+        accountId: accId,
+        debit: l.debit,
+        credit: l.credit,
+        description: l.description,
+        partnerId: l.partnerId,
+        costCenterId: l.costCenterId,
+        analyticAccountId: l.analyticAccountId,
+        taxCodeId: l.taxCodeId,
+      })
     }
 
-    const entry = await db.journalEntry.create({
+    const totalDebit = lines.reduce((s: number, l: any) => s + l.debit, 0)
+    const totalCredit = lines.reduce((s: number, l: any) => s + l.credit, 0)
+
+    const draft = await db.journalEntry.create({
       data: {
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: branchId || null,
         code,
-        journalId,
+        journalId: body.journalId,
         postingDate,
-        reference: body.reference,
         description: body.description,
-        refType: body.refType,
-        refId: body.refId,
+        reference: body.reference,
+        refType: body.refType ?? 'manual',
         currencyId: body.currencyId,
         state: 'draft',
         totalDebit,
         totalCredit,
-        createdBy: body.userId,
-        lines: {
-          create: lines.map((l) => ({
-            accountId: accountMap.get(l.accountCode)!,
-            partnerId: l.partnerId,
-            debit: l.debit,
-            credit: l.credit,
-            description: l.description,
-            costCenterId: l.costCenterId,
-            analyticAccountId: l.analyticAccountId,
-            taxCodeId: l.taxCodeId,
-          })),
-        },
+        createdBy: auth.userId,
+        lines: { create: lineRecords },
       },
-      include: { lines: { include: { account: true } } },
+      include: {
+        lines: { include: { account: true, partner: true } },
+        journal: true,
+      },
     })
-    return created(entry)
+    return created(draft)
   } catch (e: any) {
     return serverError(e.message)
   }

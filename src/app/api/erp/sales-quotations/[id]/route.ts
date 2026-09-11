@@ -1,12 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/sales-quotations/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.salesQuotation.findUnique({
-      where: { id },
+    const item = await db.salesQuotation.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         partner: true,
         lines: { include: { product: true } },
@@ -22,11 +30,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT — update quotation details, status, or lines
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
 
-    const exists = await db.salesQuotation.findUnique({
-      where: { id },
+    const exists = await db.salesQuotation.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { lines: true },
     })
     if (!exists) return notFound('Quotation not found')
@@ -34,6 +45,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     // If quotation is already converted, disallow modifications unless setting same status
     if (exists.status === 'converted' && body.status && body.status !== 'converted') {
       return badRequest('لا يمكن تعديل عرض سعر تم تحويله بالكامل / Cannot modify a converted quotation')
+    }
+
+    if (body.partnerId || body.branchId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, {
+        partnerId: body.partnerId,
+        branchId: body.branchId,
+      })
+      if (!fkCheck.valid && fkCheck.error) return fkCheck.error
     }
 
     const dataToUpdate: any = {}
@@ -51,6 +70,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // If lines are provided in request body, calculate line totals and update lines atomically
     if (Array.isArray(body.lines)) {
+      const lineProductIds = body.lines.map((l: any) => l.productId).filter(Boolean)
+      const linesFkCheck = await verifyTenantForeignKeys(auth, { productIds: lineProductIds })
+      if (!linesFkCheck.valid && linesFkCheck.error) return linesFkCheck.error
+
       let subtotal = 0
       let taxTotal = 0
       const processedLines = body.lines.map((l: any) => {
@@ -72,38 +95,37 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           total,
         }
       })
-      const discount = body.discount !== undefined ? body.discount : (exists.discount ?? 0)
-      const total = subtotal + taxTotal - discount
+      const total = subtotal + taxTotal - (body.discount ?? exists.discount ?? 0)
 
       dataToUpdate.subtotal = subtotal
       dataToUpdate.taxTotal = taxTotal
-      dataToUpdate.discount = discount
       dataToUpdate.total = total
+      if (body.discount !== undefined) dataToUpdate.discount = body.discount
 
-      const updated = await db.$transaction(async (tx) => {
-        await tx.salesQuotationLine.deleteMany({ where: { quotationId: id } })
-        return tx.salesQuotation.update({
-          where: { id },
+      await db.$transaction([
+        db.salesQuotationLine.deleteMany({ where: { quotationId: exists.id } }),
+        db.salesQuotation.update({
+          where: { id: exists.id },
           data: {
             ...dataToUpdate,
             lines: { create: processedLines },
           },
-          include: {
-            partner: true,
-            lines: { include: { product: true } },
-          },
-        })
+        }),
+      ])
+    } else {
+      if (body.discount !== undefined) {
+        dataToUpdate.discount = body.discount
+        dataToUpdate.total = exists.subtotal + exists.taxTotal - body.discount
+      }
+      await db.salesQuotation.update({
+        where: { id: exists.id },
+        data: dataToUpdate,
       })
-      return ok(updated)
     }
 
-    const updated = await db.salesQuotation.update({
-      where: { id },
-      data: dataToUpdate,
-      include: {
-        partner: true,
-        lines: { include: { product: true } },
-      },
+    const updated = await db.salesQuotation.findFirst({
+      where: { id: exists.id, companyId: auth.companyId },
+      include: { lines: true, partner: true },
     })
     return ok(updated)
   } catch (e: any) {
@@ -111,18 +133,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-// DELETE — delete quotation if not converted to sales order
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.salesQuotation.findUnique({ where: { id } })
+    const exists = await db.salesQuotation.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Quotation not found')
 
-    if (exists.status === 'converted' || exists.convertedSalesOrderId) {
-      return badRequest('لا يمكن حذف عرض سعر تم تحويله إلى أمر بيع / Cannot delete a converted quotation')
+    if (exists.status === 'converted') {
+      return badRequest('لا يمكن حذف عرض سعر تم تحويله / Cannot delete a converted quotation')
     }
 
-    await db.salesQuotation.delete({ where: { id } })
+    await db.salesQuotation.delete({ where: { id: exists.id } })
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)

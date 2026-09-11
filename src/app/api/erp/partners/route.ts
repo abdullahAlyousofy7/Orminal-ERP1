@@ -1,9 +1,18 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/partners — list with search
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'partners', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
@@ -11,7 +20,9 @@ export async function GET(req: Request) {
     const isSupplier = url.searchParams.get('isSupplier')
     const active = url.searchParams.get('active')
 
-    const where: any = {}
+    const baseWhere = scopedWhere(auth, {})
+    const where: any = { ...baseWhere }
+
     if (q) {
       where.OR = [
         { code: { contains: q } },
@@ -50,15 +61,24 @@ export async function GET(req: Request) {
 // POST /api/erp/partners — create unified BP
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'partners', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
+    if (body.receivableAccountId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { accountId: body.receivableAccountId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+    if (body.payableAccountId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { accountId: body.payableAccountId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
 
     let code = body.code
     if (!code) {
-      const count = await db.partner.count()
+      const count = await db.partner.count({ where: { companyId: auth.companyId } })
       code = `P-${String(count + 1).padStart(5, '0')}`
     }
 
@@ -67,7 +87,7 @@ export async function POST(req: Request) {
         code,
         nameAr: body.nameAr,
         nameEn: body.nameEn,
-        companyId: company.id,
+        companyId: auth.companyId,
         isCustomer: body.isCustomer ?? false,
         isSupplier: body.isSupplier ?? false,
         isEmployee: body.isEmployee ?? false,

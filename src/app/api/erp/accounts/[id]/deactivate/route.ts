@@ -4,11 +4,11 @@
 
 import { db } from '@/lib/db'
 import { ok, notFound, serverError, conflict, badRequest } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { auditAccount } from '@/lib/erp/audit'
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canDelete')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canDelete' })
   if (isAuthFailure(auth)) return auth
 
   try {

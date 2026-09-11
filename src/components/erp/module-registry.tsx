@@ -134,6 +134,8 @@ const SystemConfigModule = lazy(() => import('@/components/modules/system-config
 const ProfileModule = lazy(() => import('@/components/modules/profile-module'))
 const DocumentTemplatesModule = lazy(() => import('@/components/modules/document-templates-module'))
 const OrgStructureModule = lazy(() => import('@/components/modules/org-structure-module'))
+const SequenceDocTypesModule = lazy(() => import('@/components/modules/sequence-doc-types-module'))
+const TransactionSequencesModule = lazy(() => import('@/components/modules/transaction-sequences-module').then(m => ({ default: m.TransactionSequencesModule })))
 
 export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   // Standalone Org Structure
@@ -333,8 +335,8 @@ export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   'view-privileges': RolesModule,
   'audit-control': AuditLogsModule,
   'system-settings': SettingsModule,
-  'sequence-doc-types': SettingsModule,
-  'transaction-sequences': SettingsModule,
+  'sequence-doc-types': SequenceDocTypesModule,
+  'transaction-sequences': TransactionSequencesModule,
   'system-alerts': NotificationsModule,
   'default-transaction-data': SettingsModule,
 
@@ -344,7 +346,7 @@ export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   'config-general-vars': SystemConfigModule,
   'config-general-defs': SystemConfigModule,
   'config-currencies': SystemConfigModule,
-  'config-fiscal-periods': SystemConfigModule,
+  'config-fiscal-periods': FiscalPeriodsModule,
   'config-org-structure': OrgStructureModule,
   'config-subledgers-naming': SystemConfigModule,
   'config-doc-types': SystemConfigModule,

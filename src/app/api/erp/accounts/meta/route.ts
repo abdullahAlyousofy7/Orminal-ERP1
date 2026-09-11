@@ -3,13 +3,13 @@
 
 import { db } from '@/lib/db'
 import { ok, serverError } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { ACCOUNT_CLASSES, ACCOUNT_CLASS_CODES } from '@/lib/erp/account-classes'
 import { ACCOUNT_ROLES } from '@/lib/erp/account-roles'
 import { VALID_FS_SECTION, VALID_NORMAL_BALANCE, VALID_TAX_BEHAVIOR } from '@/lib/erp/account-service'
 
-export async function GET() {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canRead')
+export async function GET(req: Request) {
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {

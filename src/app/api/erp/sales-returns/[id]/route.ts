@@ -1,13 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, SYSTEM_ACCOUNTS, JournalLineInput } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/sales-returns/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.salesReturn.findUnique({
-      where: { id },
+    const item = await db.salesReturn.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         partner: true,
         lines: { include: { product: true } },
@@ -23,22 +30,27 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT — update (only draft) OR action=approve|receive|credit|close|cancel
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json().catch(() => ({}))
     const action = body.action
 
-    const exists = await db.salesReturn.findUnique({ where: { id } })
+    const exists = await db.salesReturn.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Sales return not found')
 
     // Status-flow actions
     if (action === 'approve') {
       if (exists.status !== 'draft') return badRequest('Only draft returns can be approved')
-      const updated = await db.salesReturn.update({ where: { id }, data: { status: 'approved' } })
+      const updated = await db.salesReturn.update({ where: { id: exists.id }, data: { status: 'approved' } })
       return ok(updated)
     }
     if (action === 'receive') {
       if (exists.status !== 'approved') return badRequest('Only approved returns can be received')
-      const updated = await db.salesReturn.update({ where: { id }, data: { status: 'received' } })
+      const updated = await db.salesReturn.update({ where: { id: exists.id }, data: { status: 'received' } })
       return ok(updated)
     }
     if (action === 'credit') {
@@ -47,14 +59,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         return badRequest('Return already credited')
       }
 
-      const company = await db.company.findFirst()
-      if (!company) return badRequest('no company in db')
-      const branch = await db.branch.findFirst({ where: { companyId: company.id } })
-
       // Construct Credit Note journal entry lines:
-      // Debit: Sales Returns (4200) -> subtotal
-      // Debit: Output VAT (2100) -> taxTotal
-      // Credit: AR Customer (1100) -> total
       const creditNoteLines: JournalLineInput[] = []
 
       if (exists.subtotal > 0) {
@@ -84,23 +89,23 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       })
 
       const journalEntry = await postJournalEntry({
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: exists.branchId || undefined,
         journalType: 'sale',
         postingDate: new Date(),
         description: `إشعار دائن لمرتجع مبيعات ${exists.code}`,
         refType: 'sales_return_credit',
         refId: exists.id,
         lines: creditNoteLines,
-        userId: body.userId,
+        userId: auth.userId,
       })
 
-      // Generate Credit Note Code CN-YYYY-NNNNN
+      // Generate Credit Note Code CN-YYYY-NNNNN scoped to company
       const year = new Date().getFullYear()
-      const countCN = await db.salesCreditNote.count({ where: { companyId: company.id } })
+      const countCN = await db.salesCreditNote.count({ where: { companyId: auth.companyId } })
       let seqCN = countCN + 1
       let cnCode = `CN-${year}-${String(seqCN).padStart(5, '0')}`
-      while (await db.salesCreditNote.findUnique({ where: { code: cnCode } })) {
+      while (await db.salesCreditNote.findFirst({ where: { code: cnCode, companyId: auth.companyId } })) {
         seqCN += 1
         cnCode = `CN-${year}-${String(seqCN).padStart(5, '0')}`
       }
@@ -108,8 +113,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       // Save formal Sales Credit Note record
       const creditNote = await db.salesCreditNote.create({
         data: {
-          companyId: company.id,
-          branchId: branch?.id,
+          companyId: auth.companyId,
+          branchId: exists.branchId,
           code: cnCode,
           partnerId: exists.partnerId,
           invoiceId: exists.originalInvoiceId || null,
@@ -126,7 +131,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
       // Update Sales Return status
       await db.salesReturn.update({
-        where: { id },
+        where: { id: exists.id },
         data: { status: 'credited', journalEntryId: journalEntry.id },
       })
 
@@ -136,28 +141,28 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         data: { currentBalance: { decrement: exists.total } },
       })
 
-      const result = await db.salesReturn.findUnique({
-        where: { id },
+      const result = await db.salesReturn.findFirst({
+        where: { id: exists.id, companyId: auth.companyId },
         include: { partner: true, lines: { include: { product: true } } },
       })
       return ok({ ...result, creditNote })
     }
     if (action === 'close') {
       if (exists.status !== 'credited') return badRequest('Only credited returns can be closed')
-      const updated = await db.salesReturn.update({ where: { id }, data: { status: 'closed' } })
+      const updated = await db.salesReturn.update({ where: { id: exists.id }, data: { status: 'closed' } })
       return ok(updated)
     }
     if (action === 'cancel') {
       if (exists.status === 'credited' || exists.status === 'closed')
         return badRequest('Cannot cancel credited/closed returns')
-      const updated = await db.salesReturn.update({ where: { id }, data: { status: 'cancelled' } })
+      const updated = await db.salesReturn.update({ where: { id: exists.id }, data: { status: 'cancelled' } })
       return ok(updated)
     }
 
     // Default: simple field update (only draft)
     if (exists.status !== 'draft') return badRequest('Only draft returns can be edited')
-    const { id: _id, lines, createdAt: _c, updatedAt: _u, ...rest } = body
-    const updated = await db.salesReturn.update({ where: { id }, data: rest })
+    const { id: _id, companyId: _c, createdBy: _u, lines, createdAt: _ca, updatedAt: _ua, ...rest } = body
+    const updated = await db.salesReturn.update({ where: { id: exists.id }, data: rest })
     return ok(updated)
   } catch (e: any) {
     return serverError(e.message)
@@ -165,15 +170,20 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 // DELETE — only draft
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.salesReturn.findUnique({ where: { id } })
+    const exists = await db.salesReturn.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Sales return not found')
     if (exists.status !== 'draft' && exists.status !== 'cancelled')
       return badRequest('Only draft or cancelled returns can be deleted')
 
-    await db.salesReturn.delete({ where: { id } })
+    await db.salesReturn.delete({ where: { id: exists.id } })
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)

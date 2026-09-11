@@ -5,20 +5,20 @@
 
 import { db } from '@/lib/db'
 import { ok, serverError } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { fetchAccountBalances } from '@/lib/erp/account-service'
 import { ACCOUNT_CLASS_CODES, signedBalance } from '@/lib/erp/account-classes'
 import { ACCOUNT_ROLES } from '@/lib/erp/account-roles'
 
-export async function GET() {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canRead')
+export async function GET(req: Request) {
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
     const accounts = await db.account.findMany({
       select: { id: true, accountClass: true, isPosting: true, isSystem: true, active: true, normalBalance: true },
     })
-    const balances = await fetchAccountBalances()
+    const balances = await fetchAccountBalances(undefined, auth.companyId)
 
     const byClass: Record<string, { count: number; balance: number }> = {}
     for (const c of ACCOUNT_CLASS_CODES) byClass[c] = { count: 0, balance: 0 }

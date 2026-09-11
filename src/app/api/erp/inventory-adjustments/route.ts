@@ -2,20 +2,31 @@ import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
 import { postJournalEntry } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/inventory-adjustments
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
     const warehouseId = url.searchParams.get('warehouseId')
 
-    const where: any = {}
-    if (q) where.code = { contains: q }
-    if (status) where.status = status
-    if (warehouseId) where.warehouseId = warehouseId
+    const baseWhere: any = {}
+    if (q) baseWhere.code = { contains: q }
+    if (status) baseWhere.status = status
+    if (warehouseId) baseWhere.warehouseId = warehouseId
+
+    const where = scopedWhere(auth, baseWhere)
 
     const [data, total] = await Promise.all([
       db.inventoryAdjustment.findMany({
@@ -40,15 +51,21 @@ export async function GET(req: Request) {
 // POST — create. On post: create StockMove, update StockQuant, post inventory gain/loss journal
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.warehouseId) return badRequest('warehouseId is required')
     if (!body.lines || body.lines.length === 0) return badRequest('lines are required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    const productIds = body.lines.map((l: any) => l.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      warehouseId: body.warehouseId,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
 
-    const code = await nextNumber('inventory_adjustment', company.id, branch?.id)
+    const code = await nextNumber('inventory_adjustment', auth.companyId)
     const status = body.status ?? 'draft'
 
     // Compute variance per line
@@ -59,7 +76,7 @@ export async function POST(req: Request) {
 
     const adjustment = await db.inventoryAdjustment.create({
       data: {
-        companyId: company.id,
+        companyId: auth.companyId,
         code,
         warehouseId: body.warehouseId,
         adjustmentDate: body.adjustmentDate ? new Date(body.adjustmentDate) : new Date(),
@@ -67,7 +84,7 @@ export async function POST(req: Request) {
         reasonCodeId: body.reasonCodeId,
         status,
         notes: body.notes,
-        createdBy: body.createdBy,
+        createdBy: auth.userId,
         lines: {
           create: lines.map((l: any) => ({
             productId: l.productId,
@@ -91,10 +108,9 @@ export async function POST(req: Request) {
           const variance = l.variance
           if (variance === 0) continue
 
-          // StockMove
           await tx.stockMove.create({
             data: {
-              companyId: company.id,
+              companyId: auth.companyId,
               documentType: 'adjustment',
               documentId: adjustment.id,
               productId: l.productId,
@@ -109,7 +125,6 @@ export async function POST(req: Request) {
             },
           })
 
-          // Update StockQuant
           const quant = await tx.stockQuant.findFirst({
             where: { productId: l.productId, warehouseId: body.warehouseId, locationId: null, lotId: null },
           })
@@ -128,7 +143,6 @@ export async function POST(req: Request) {
             })
           }
 
-          // Track gain/loss
           const lineValue = Math.abs(variance) * (l.unitCost || 0)
           if (variance > 0) gainAmount += lineValue
           else lossAmount += lineValue
@@ -136,30 +150,26 @@ export async function POST(req: Request) {
         await tx.inventoryAdjustment.update({ where: { id: adjustment.id }, data: { status: 'posted' } })
       })
 
-      // Post journal entry: Dr/Cr Inventory vs Operating Expenses/Other Revenue
       const journalLines: any[] = []
       if (gainAmount > 0) {
-        // Inventory gain: Dr Inventory / Cr Other Revenue
         journalLines.push({ role: 'INVENTORY', debit: gainAmount, credit: 0, description: 'زيادة مخزون' })
         journalLines.push({ role: 'INVENTORY_GAIN', debit: 0, credit: gainAmount, description: 'إيراد آخر - زيادة مخزون' })
       }
       if (lossAmount > 0) {
-        // Inventory loss: Dr Operating Expenses / Cr Inventory
         journalLines.push({ role: 'INVENTORY_LOSS', debit: lossAmount, credit: 0, description: 'مصروف - نقص مخزون' })
         journalLines.push({ role: 'INVENTORY', debit: 0, credit: lossAmount, description: 'نقص مخزون' })
       }
 
       if (journalLines.length > 0) {
         const je = await postJournalEntry({
-          companyId: company.id,
-          branchId: branch?.id,
+          companyId: auth.companyId,
           journalType: 'general',
           postingDate: new Date(),
           description: `تسوية مخزون ${code}`,
           refType: 'inventory_adjustment',
           refId: adjustment.id,
           lines: journalLines,
-          userId: body.createdBy,
+          userId: auth.userId,
         })
         await db.inventoryAdjustment.update({
           where: { id: adjustment.id },
@@ -168,8 +178,8 @@ export async function POST(req: Request) {
       }
     }
 
-    const result = await db.inventoryAdjustment.findUnique({
-      where: { id: adjustment.id },
+    const result = await db.inventoryAdjustment.findFirst({
+      where: { id: adjustment.id, companyId: auth.companyId },
       include: {
         lines: { include: { product: true } },
         warehouse: true,

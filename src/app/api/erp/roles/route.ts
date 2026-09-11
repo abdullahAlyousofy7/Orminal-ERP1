@@ -1,8 +1,12 @@
 import { db } from '@/lib/db'
 import { ok, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const where: any = {}
@@ -25,6 +29,9 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.code || !body.nameAr) return badRequest('الكود والاسم مطلوبان')
     const created = await db.role.create({

@@ -1,11 +1,19 @@
 import { db } from '@/lib/db'
-import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import { ok, notFound, badRequest, forbidden, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  checkCapability,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'MFG', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.productionOrder.findUnique({
-      where: { id },
+    const item = await db.productionOrder.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         product: { select: { id: true, sku: true, nameAr: true, nameEn: true } },
         bom: { select: { id: true, code: true, nameAr: true } },
@@ -20,14 +28,19 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'MFG', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.productionOrder.findUnique({ where: { id } })
+    const exists = await db.productionOrder.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Production order not found')
 
     const { action } = body
     if (action) {
-      // Action-based transitions: release / complete / close
+      // Action-based transitions: release / complete / close / cancel
       let newStatus = exists.status
       let patch: any = {}
       if (action === 'release') {
@@ -49,6 +62,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         }
         newStatus = 'closed'
       } else if (action === 'cancel') {
+        const canCancel = await checkCapability(auth, 'MFG', 'canCancel')
+        if (!canCancel.allowed) {
+          return forbidden('صلاحية الإلغاء غير متوفرة لهذا الحساب', 'INSUFFICIENT_PERMISSION')
+        }
         newStatus = 'cancelled'
       } else {
         return badRequest(`إجراء غير معروف: ${action}`)
@@ -59,7 +76,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     // Plain update
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = body
+    const { id: _id, companyId: _c, createdAt: _c2, updatedAt: _u, ...rest } = body
     if (rest.quantity !== undefined) rest.quantity = Number(rest.quantity) || 0
     if (rest.plannedStart) rest.plannedStart = new Date(rest.plannedStart)
     if (rest.plannedEnd) rest.plannedEnd = new Date(rest.plannedEnd)
@@ -70,10 +87,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'MFG', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.productionOrder.findUnique({ where: { id } })
+    const exists = await db.productionOrder.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Production order not found')
     if (['released', 'in_progress', 'produced', 'closed'].includes(exists.status)) {
       return badRequest('لا يمكن حذف أمر إنتاج تم تحريره')

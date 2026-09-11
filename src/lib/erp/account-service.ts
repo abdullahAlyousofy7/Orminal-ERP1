@@ -365,10 +365,21 @@ export function flattenTree<T extends AccountNodeLike>(roots: AccountTreeNode<T>
 // ---------------------------------------------------------------------------
 
 /** Sum debit/credit per account in one query (no N+1). */
-export async function fetchAccountBalances(accountIds?: string[]): Promise<Map<string, { debit: number; credit: number }>> {
+export async function fetchAccountBalances(
+  accountIds?: string[],
+  companyId?: string
+): Promise<Map<string, { debit: number; credit: number }>> {
+  const where: any = {}
+  if (accountIds && accountIds.length) {
+    where.accountId = { in: accountIds }
+  }
+  if (companyId) {
+    where.entry = { companyId }
+  }
+
   const grouped = await db.journalLine.groupBy({
     by: ['accountId'],
-    where: accountIds && accountIds.length ? { accountId: { in: accountIds } } : undefined,
+    where: Object.keys(where).length ? where : undefined,
     _sum: { debit: true, credit: true },
   })
   return new Map(grouped.map((g) => [g.accountId, { debit: g._sum.debit ?? 0, credit: g._sum.credit ?? 0 }]))

@@ -1,15 +1,26 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'expenses', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const url = new URL(req.url)
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
     const q = url.searchParams.get('q')
+    const requestedBranch = url.searchParams.get('branchId')
 
-    const where: any = {}
+    const baseWhere = scopedWhere(auth, { branchId: requestedBranch || undefined })
+    const where: any = { ...baseWhere }
     
     if (from || to) {
       where.date = {}
@@ -41,7 +52,6 @@ export async function GET(req: Request) {
       db.expense.count({ where }),
     ])
 
-    // Map nameAr to name for frontend safe mapping if needed
     const mappedData = data.map((item: any) => ({
       ...item,
       bankAccount: item.bankAccount ? {
@@ -64,49 +74,65 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'expenses', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (body.amount === undefined || body.amount === null) return badRequest('amount is required')
     if (!body.category) return badRequest('category is required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    const branchId = body.branchId || (auth.authorizedBranchIds.length > 0 ? auth.authorizedBranchIds[0] : null)
+    if (branchId && !auth.authorizedBranchIds.includes(branchId)) {
+      return badRequest('Unauthorized branch specified')
+    }
+
+    // Verify tenant FKs: branch, bankAccount, safe
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      branchId,
+      bankAccountId: body.bankAccountId,
+      safeId: body.safeId,
+    })
+    if (!fkCheck.valid) return fkCheck.error!
 
     const amount = Number(body.amount)
-    const count = await db.expense.count()
+    const count = await db.expense.count({ where: { companyId: auth.companyId } })
     const code = `EXP-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`
 
-    const expense = await db.expense.create({
-      data: {
-        companyId: company.id,
-        branchId: branch?.id,
-        code,
-        date: body.date ? new Date(body.date) : new Date(),
-        amount,
-        payee: body.payee || '',
-        category: body.category,
-        reference: body.reference || '',
-        note: body.note || '',
-        status: body.status ?? 'posted',
-        bankAccountId: body.bankAccountId || null,
-        safeId: body.safeId || null,
-      },
-    })
+    const expense = await db.$transaction(async (tx) => {
+      const exp = await tx.expense.create({
+        data: {
+          companyId: auth.companyId,
+          branchId: branchId || null,
+          code,
+          date: body.date ? new Date(body.date) : new Date(),
+          amount,
+          payee: body.payee || '',
+          category: body.category,
+          reference: body.reference || '',
+          note: body.note || '',
+          status: body.status ?? 'posted',
+          bankAccountId: body.bankAccountId || null,
+          safeId: body.safeId || null,
+        },
+      })
 
-    // Deduct balance
-    if (body.status !== 'draft') {
-      if (body.bankAccountId) {
-        await db.bankAccount.update({
-          where: { id: body.bankAccountId },
-          data: { balance: { decrement: amount } },
-        })
-      } else if (body.safeId) {
-        await db.safe.update({
-          where: { id: body.safeId },
-          data: { balance: { decrement: amount } },
-        })
+      // Deduct balance within tenant transaction
+      if (body.status !== 'draft') {
+        if (body.bankAccountId) {
+          await tx.bankAccount.update({
+            where: { id: body.bankAccountId },
+            data: { balance: { decrement: amount } },
+          })
+        } else if (body.safeId) {
+          await tx.safe.update({
+            where: { id: body.safeId },
+            data: { balance: { decrement: amount } },
+          })
+        }
       }
-    }
+
+      return exp
+    })
 
     const result = await db.expense.findUnique({
       where: { id: expense.id },

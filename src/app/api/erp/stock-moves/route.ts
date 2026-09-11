@@ -1,8 +1,16 @@
 import { db } from '@/lib/db'
 import { list, serverError, parsePagination } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  scopedWhere,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const url = new URL(req.url)
     const productId = url.searchParams.get('productId')
@@ -12,18 +20,20 @@ export async function GET(req: Request) {
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
 
-    const where: any = {}
-    if (productId) where.productId = productId
-    if (documentType) where.documentType = documentType
-    if (state) where.state = state
+    const baseWhere: any = {}
+    if (productId) baseWhere.productId = productId
+    if (documentType) baseWhere.documentType = documentType
+    if (state) baseWhere.state = state
     if (warehouseId) {
-      where.OR = [{ sourceWarehouseId: warehouseId }, { destWarehouseId: warehouseId }]
+      baseWhere.OR = [{ sourceWarehouseId: warehouseId }, { destWarehouseId: warehouseId }]
     }
     if (from || to) {
-      where.postingDate = {}
-      if (from) where.postingDate.gte = new Date(from)
-      if (to) where.postingDate.lte = new Date(to)
+      baseWhere.postingDate = {}
+      if (from) baseWhere.postingDate.gte = new Date(from)
+      if (to) baseWhere.postingDate.lte = new Date(to)
     }
+
+    const where = scopedWhere(auth, baseWhere)
 
     const [data, total] = await Promise.all([
       db.stockMove.findMany({

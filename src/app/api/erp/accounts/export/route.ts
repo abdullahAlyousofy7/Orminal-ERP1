@@ -5,7 +5,7 @@
 import ExcelJS from 'exceljs'
 import { db } from '@/lib/db'
 import { ok, serverError } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { writeAudit } from '@/lib/erp/audit'
 import { fetchAccountBalances } from '@/lib/erp/account-service'
 import { signedBalance } from '@/lib/erp/account-classes'
@@ -23,7 +23,7 @@ function csvCell(v: unknown): string {
 }
 
 export async function GET(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canExport')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canExport' })
   if (isAuthFailure(auth)) return auth
 
   try {
@@ -38,7 +38,7 @@ export async function GET(req: Request) {
         roleMappings: { where: { active: true }, select: { role: true } },
       },
     })
-    const balances = await fetchAccountBalances()
+    const balances = await fetchAccountBalances(undefined, auth.companyId)
 
     const rows = accounts.map((a) => {
       const b = balances.get(a.id) ?? { debit: 0, credit: 0 }

@@ -1,17 +1,29 @@
 import { db } from '@/lib/db'
-import { ok, notFound, serverError } from '@/lib/erp/api-response'
+import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'revenues', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.revenue.findUnique({
-      where: { id },
+    const item = await db.revenue.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         bankAccount: { select: { id: true, nameAr: true, bankName: true } },
         safe: { select: { id: true, nameAr: true, code: true } },
       },
     })
     if (!item) return notFound('Revenue not found')
+
+    if (item.branchId && !auth.authorizedBranchIds.includes(item.branchId)) {
+      return notFound('Revenue not found')
+    }
 
     const mapped = {
       ...item,
@@ -35,12 +47,35 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'revenues', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const body = await req.json()
-    const exists = await db.revenue.findUnique({ where: { id } })
+    const exists = await db.revenue.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Revenue not found')
 
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = body
+    if (exists.branchId && !auth.authorizedBranchIds.includes(exists.branchId)) {
+      return notFound('Revenue not found')
+    }
+
+    const body = await req.json()
+    const { id: _id, companyId: _cId, createdAt: _c, updatedAt: _u, ...rest } = body
+
+    if (rest.branchId && !auth.authorizedBranchIds.includes(rest.branchId)) {
+      return badRequest('Unauthorized branch specified')
+    }
+
+    if (rest.branchId || rest.bankAccountId || rest.safeId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, {
+        branchId: rest.branchId,
+        bankAccountId: rest.bankAccountId,
+        safeId: rest.safeId,
+      })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
     const updated = await db.revenue.update({
       where: { id },
       data: rest,
@@ -70,28 +105,40 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'revenues', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.revenue.findUnique({ where: { id } })
+    const exists = await db.revenue.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Revenue not found')
 
-    // If it was posted, we should deduct the safe/bank account balance back
-    if (exists.status !== 'draft') {
-      if (exists.bankAccountId) {
-        await db.bankAccount.update({
-          where: { id: exists.bankAccountId },
-          data: { balance: { decrement: exists.amount } },
-        })
-      } else if (exists.safeId) {
-        await db.safe.update({
-          where: { id: exists.safeId },
-          data: { balance: { decrement: exists.amount } },
-        })
-      }
+    if (exists.branchId && !auth.authorizedBranchIds.includes(exists.branchId)) {
+      return notFound('Revenue not found')
     }
 
-    await db.revenue.delete({ where: { id } })
+    await db.$transaction(async (tx) => {
+      // If it was posted, deduct the safe/bank account balance back
+      if (exists.status !== 'draft') {
+        if (exists.bankAccountId) {
+          await tx.bankAccount.update({
+            where: { id: exists.bankAccountId },
+            data: { balance: { decrement: exists.amount } },
+          })
+        } else if (exists.safeId) {
+          await tx.safe.update({
+            where: { id: exists.safeId },
+            data: { balance: { decrement: exists.amount } },
+          })
+        }
+      }
+
+      await tx.revenue.delete({ where: { id } })
+    })
+
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)

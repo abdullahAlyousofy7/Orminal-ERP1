@@ -1,9 +1,13 @@
 import { db } from '@/lib/db'
-import { list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 // GET /api/erp/journals — list journals
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'journals', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
@@ -24,7 +28,15 @@ export async function GET(req: Request) {
         where,
         skip,
         take: pageSize,
-        include: { _count: { select: { journalEntries: true } } },
+        include: {
+          _count: {
+            select: {
+              journalEntries: {
+                where: { companyId: auth.companyId },
+              },
+            },
+          },
+        },
         orderBy: { code: 'asc' },
       }),
       db.journal.count({ where }),
@@ -37,6 +49,9 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'journals', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.code) return badRequest('code is required')
     if (!body.nameAr) return badRequest('nameAr is required')
@@ -52,7 +67,7 @@ export async function POST(req: Request) {
         active: body.active ?? true,
       },
     })
-    return list([journal], 1, 1, 1)
+    return created(journal)
   } catch (e: any) {
     return serverError(e.message)
   }

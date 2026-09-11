@@ -1,25 +1,84 @@
-import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
+    const branchFilter =
+      !auth.isSuperAdmin && auth.authorizedBranchIds.length > 0
+        ? { branchId: { in: auth.authorizedBranchIds } }
+        : {}
+
     const [
       salesOrders, purchaseOrders, partners, products, stockQuants,
-      salesPayments, purchasePayments, journalEntries, accounts,
-      salesInvoices, purchaseInvoices,
+      salesPayments, purchasePayments, journalEntries,
+      salesInvoices, purchaseInvoices, keyAccountLines,
     ] = await Promise.all([
-      db.salesOrder.findMany({ include: { partner: { select: { nameAr: true, nameEn: true } } }, orderBy: { createdAt: 'desc' }, take: 5 }),
-      db.purchaseOrder.findMany({ select: { total: true, paid: true, status: true, createdAt: true } }),
-      db.partner.count(),
-      db.product.count(),
-      db.stockQuant.findMany({ include: { product: { select: { nameAr: true, nameEn: true, sku: true, costPrice: true, minStock: true } } } }),
-      db.salesPayment.findMany({ where: { status: 'posted' }, select: { amount: true, paymentDate: true } }),
-      db.purchasePayment.findMany({ where: { status: 'posted' }, select: { amount: true, paymentDate: true } }),
-      db.journalEntry.findMany({ include: { lines: { include: { account: { select: { code: true, type: true } } } } }, orderBy: { postingDate: 'desc' } }),
-      db.account.findMany(),
-      db.salesInvoice.findMany({ select: { total: true, paid: true, status: true, createdAt: true, invoiceDate: true } }),
-      db.purchaseInvoice.findMany({ select: { total: true, paid: true, status: true, createdAt: true } }),
+      db.salesOrder.findMany({
+        where: { companyId: auth.companyId, ...branchFilter },
+        include: { partner: { select: { nameAr: true, nameEn: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
+      db.purchaseOrder.findMany({
+        where: { companyId: auth.companyId, ...branchFilter },
+        select: { total: true, paid: true, status: true, createdAt: true },
+      }),
+      db.partner.count({ where: { companyId: auth.companyId } }),
+      db.product.count({ where: { companyId: auth.companyId } }),
+      db.stockQuant.findMany({
+        where: {
+          warehouse: {
+            branch: {
+              companyId: auth.companyId,
+              ...(!auth.isSuperAdmin && auth.authorizedBranchIds.length > 0
+                ? { id: { in: auth.authorizedBranchIds } }
+                : {}),
+            },
+          },
+        },
+        include: {
+          product: { select: { nameAr: true, nameEn: true, sku: true, costPrice: true, minStock: true } },
+        },
+      }),
+      db.salesPayment.findMany({
+        where: { status: 'posted', companyId: auth.companyId, ...branchFilter },
+        select: { amount: true, paymentDate: true },
+      }),
+      db.purchasePayment.findMany({
+        where: { status: 'posted', companyId: auth.companyId, ...branchFilter },
+        select: { amount: true, paymentDate: true },
+      }),
+      db.journalEntry.findMany({
+        where: { state: 'posted', companyId: auth.companyId, ...branchFilter },
+        include: { lines: { include: { account: { select: { code: true, type: true } } } } },
+        orderBy: { postingDate: 'desc' },
+      }),
+      db.salesInvoice.findMany({
+        where: { companyId: auth.companyId, ...branchFilter },
+        select: { total: true, paid: true, status: true, createdAt: true, invoiceDate: true },
+      }),
+      db.purchaseInvoice.findMany({
+        where: { companyId: auth.companyId, ...branchFilter },
+        select: { total: true, paid: true, status: true, createdAt: true },
+      }),
+      db.journalLine.findMany({
+        where: {
+          entry: { companyId: auth.companyId, state: 'posted' },
+          account: { code: { in: ['1000', '1100', '2000'] } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          account: { select: { code: true } },
+        },
+      }),
     ])
 
     const totalSales = salesOrders.reduce((s, o) => s + o.total, 0)
@@ -32,7 +91,6 @@ export async function GET() {
     // Net profit from journal: revenue - expense
     let totalRevenue = 0, totalExpense = 0
     for (const je of journalEntries) {
-      if (je.state !== 'posted') continue
       for (const line of je.lines) {
         if (line.account?.type === 'income') totalRevenue += line.credit - line.debit
         if (line.account?.type === 'expense') totalExpense += line.debit - line.credit
@@ -40,13 +98,13 @@ export async function GET() {
     }
     const netProfit = totalRevenue - totalExpense
 
-    // AR and AP
-    const arAccount = accounts.find((a) => a.code === '1100')
-    const apAccount = accounts.find((a) => a.code === '2000')
-    const cashAccount = accounts.find((a) => a.code === '1000')
-    const receivables = arAccount?.balance ?? 0
-    const payables = apAccount?.balance ?? 0
-    const cashBalance = cashAccount?.balance ?? 0
+    // AR, AP, Cash computed from company-scoped journal lines
+    let cashBalance = 0, receivables = 0, payables = 0
+    for (const l of keyAccountLines) {
+      if (l.account?.code === '1000') cashBalance += l.debit - l.credit
+      if (l.account?.code === '1100') receivables += l.debit - l.credit
+      if (l.account?.code === '2000') payables += l.credit - l.debit
+    }
 
     // Monthly series (last 6 months)
     const now = new Date()
@@ -60,8 +118,11 @@ export async function GET() {
       months.push({ label: monthsAr[start.getMonth()], sales: Math.round(monthSales), purchases: Math.round(monthPurchases) })
     }
 
-    // Top products by sales
-    const salesOrderItems = await db.salesOrderLine.findMany({ include: { product: { select: { nameAr: true, nameEn: true, sku: true } } } })
+    // Top products by sales (scoped to company)
+    const salesOrderItems = await db.salesOrderLine.findMany({
+      where: { order: { companyId: auth.companyId, ...branchFilter } },
+      include: { product: { select: { nameAr: true, nameEn: true, sku: true } } },
+    })
     const productSales = new Map<string, { name: string; sku: string; qty: number; revenue: number }>()
     for (const it of salesOrderItems) {
       const existing = productSales.get(it.productId) ?? { name: it.product?.nameAr ?? it.product?.nameEn ?? '—', sku: it.product?.sku ?? '', qty: 0, revenue: 0 }
@@ -90,8 +151,8 @@ export async function GET() {
     }))
 
     // Customers vs suppliers count
-    const customers = await db.partner.count({ where: { isCustomer: true } })
-    const suppliers = await db.partner.count({ where: { isSupplier: true } })
+    const customers = await db.partner.count({ where: { isCustomer: true, companyId: auth.companyId } })
+    const suppliers = await db.partner.count({ where: { isSupplier: true, companyId: auth.companyId } })
 
     return ok({
       kpis: {

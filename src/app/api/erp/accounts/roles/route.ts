@@ -6,19 +6,22 @@
 
 import { db } from '@/lib/db'
 import { ok, serverError, badRequest, notFound, unprocessableEntity } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { writeAudit } from '@/lib/erp/audit'
 import { ACCOUNT_ROLES, isValidRole, roleAcceptsClass } from '@/lib/erp/account-roles'
 import { SCOPE_ANY } from '@/lib/erp/account-determination'
 
 export async function GET(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.CONFIG, 'canRead')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
     const url = new URL(req.url)
-    const companyId = url.searchParams.get('companyId') ?? auth.companyId ?? SCOPE_ANY
-    const branchId = url.searchParams.get('branchId') ?? SCOPE_ANY
+    const companyId = auth.companyId
+    let branchId = url.searchParams.get('branchId') ?? SCOPE_ANY
+    if (branchId !== SCOPE_ANY && !auth.authorizedBranchIds.includes(branchId)) {
+      branchId = SCOPE_ANY
+    }
 
     const mappings = await db.accountRoleMapping.findMany({
       where: {
@@ -59,26 +62,25 @@ export async function GET(req: Request) {
       }
     })
 
-    return ok({
-      scope: { companyId, branchId },
-      roles: data,
-      missingRequired: data.filter((d) => d.required && (!d.mapping || !d.mapping.active)).map((d) => d.role),
-    })
+    return ok({ roles: data, scope: { companyId, branchId } })
   } catch (e: any) {
     return serverError(e.message)
   }
 }
 
 export async function PUT(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.CONFIG, 'canUpdate')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canUpdate' })
   if (isAuthFailure(auth)) return auth
 
   try {
     const body = await req.json()
     const role: string = body.role
     const accountId: string = body.accountId
-    const companyId: string = body.companyId ?? auth.companyId ?? SCOPE_ANY
-    const branchId: string = body.branchId ?? SCOPE_ANY
+    const companyId: string = auth.companyId
+    let branchId: string = body.branchId ?? SCOPE_ANY
+    if (branchId !== SCOPE_ANY && !auth.authorizedBranchIds.includes(branchId)) {
+      return badRequest('Unauthorized branch specified')
+    }
 
     if (!role) return badRequest('role مطلوب')
     if (!accountId) return badRequest('accountId مطلوب')
@@ -133,14 +135,17 @@ export async function PUT(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.CONFIG, 'canUpdate')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canUpdate' })
   if (isAuthFailure(auth)) return auth
 
   try {
     const url = new URL(req.url)
     const role = url.searchParams.get('role')
-    const companyId = url.searchParams.get('companyId') ?? auth.companyId ?? SCOPE_ANY
-    const branchId = url.searchParams.get('branchId') ?? SCOPE_ANY
+    const companyId = auth.companyId
+    let branchId = url.searchParams.get('branchId') ?? SCOPE_ANY
+    if (branchId !== SCOPE_ANY && !auth.authorizedBranchIds.includes(branchId)) {
+      return badRequest('Unauthorized branch specified')
+    }
     if (!role) return badRequest('role مطلوب')
 
     const existing = await db.accountRoleMapping.findUnique({

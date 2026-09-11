@@ -10,7 +10,7 @@
 import JSZip from 'jszip'
 import { db } from '@/lib/db'
 import { ok, serverError, badRequest, unprocessableEntity } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { COA_ACTIONS, isAuthFailure, requireCapability, requireAuthContext } from '@/lib/erp/rbac'
 import { writeAudit } from '@/lib/erp/audit'
 import { buildPath, deriveAccountFields, levelFromPath, validateAccountInput, type FieldError } from '@/lib/erp/account-service'
 import { classFromLegacyType, isAccountClass, type AccountClass } from '@/lib/erp/account-classes'
@@ -244,7 +244,7 @@ const toBool = (v: unknown, dflt: boolean): boolean => {
 }
 
 export async function POST(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canImport')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canImport' })
   if (isAuthFailure(auth)) return auth
 
   try {

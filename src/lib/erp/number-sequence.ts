@@ -1,12 +1,13 @@
+// =============================================================================
 // Enterprise ERP — Number Sequence Service
 // Source: ADR-016 — Legal, scoped, non-reusable sequences with gap reporting
-// Prefixes are now configurable via Settings (numbering.* keys)
-// Falls back to hardcoded defaults if DB unavailable
+// Dynamic Integration: TransactionSequence + SequenceSegment + NumberSequence
+// =============================================================================
 
 import { db } from '@/lib/db'
 import { getSetting, getSettingNumber } from './settings-service'
 
-// Default prefixes (used as fallback when DB settings not available)
+// Default prefixes (used as fallback when DB settings/sequences not available)
 const DEFAULT_PREFIXES: Record<string, string> = {
   sales_quotation: 'SQ',
   sales_order: 'SO',
@@ -72,49 +73,237 @@ async function getNumberLength(): Promise<number> {
 }
 
 async function getResetPolicy(): Promise<string> {
-  return await getSetting('numbering.resetPolicy', 'yearly')
+  return await getSetting('numbering.resetPolicy', 'fiscal_year')
 }
 
-// Generate next document number atomically (row-lock via upsert + increment)
+export interface NumberSequenceOptions {
+  documentDate?: Date | string
+  branchCode?: string
+}
+
+/**
+ * Resolves dynamic segments into a formatted document number.
+ */
+function resolveSegments(
+  segments: Array<{
+    segmentNumber: number
+    segmentType: string
+    value: string
+    segmentLength?: number | null
+    formatType?: string | null
+    dateFormat?: string | null
+  }>,
+  context: {
+    year: number
+    issuedNumber: number
+    padding: number
+    documentDate?: Date
+    branchCode?: string
+    prefix: string
+  }
+): string {
+  const parts: string[] = []
+  const docDate = context.documentDate ?? new Date()
+
+  for (const seg of segments) {
+    switch (seg.segmentType) {
+      case 'prefix':
+        parts.push(seg.value || context.prefix)
+        break
+      case 'delimiter':
+        parts.push(seg.value || '-')
+        break
+      case 'fiscal_year': {
+        const yrStr = String(context.year)
+        parts.push(seg.dateFormat === 'YY' ? yrStr.slice(-2) : yrStr)
+        break
+      }
+      case 'calendar_year': {
+        const calYr = String(docDate.getFullYear())
+        parts.push(seg.dateFormat === 'YY' ? calYr.slice(-2) : calYr)
+        break
+      }
+      case 'month': {
+        const m = String(docDate.getMonth() + 1).padStart(2, '0')
+        parts.push(m)
+        break
+      }
+      case 'day': {
+        const d = String(docDate.getDate()).padStart(2, '0')
+        parts.push(d)
+        break
+      }
+      case 'branch': {
+        const br = context.branchCode || seg.value || 'BR'
+        parts.push(br)
+        break
+      }
+      case 'sequence_number': {
+        const len = seg.segmentLength || context.padding
+        parts.push(String(context.issuedNumber).padStart(len, '0'))
+        break
+      }
+      default:
+        parts.push(seg.value || '')
+        break
+    }
+  }
+
+  return parts.join('')
+}
+
+/**
+ * Generate next document number atomically (row-lock via Postgres Advisory Lock + increment).
+ * Supports full scope: Company + Branch Scope + Document Type + Fiscal Year.
+ */
 export async function nextNumber(
   documentType: string,
   companyId: string,
   branchId?: string,
-  fiscalYear?: number
+  fiscalYear?: number,
+  options?: NumberSequenceOptions
 ): Promise<string> {
-  const year = fiscalYear ?? new Date().getFullYear()
-  const prefix = await getPrefix(documentType)
-  const padding = await getNumberLength()
-
-  // Find or create the sequence
-  const existing = await db.numberSequence.findFirst({
-    where: { companyId, branchId: branchId ?? null, documentType, fiscalYear: year },
+  // 1. Operational Governance: Verify SequenceDocType is not deactivated in this company
+  const docTypeRecord = await db.sequenceDocType.findFirst({
+    where: {
+      companyId,
+      docTypeKey: documentType,
+    },
+    select: { id: true, active: true, nameAr: true },
   })
 
-  if (existing) {
-    const updated = await db.numberSequence.update({
-      where: { id: existing.id },
-      data: { nextNumber: { increment: 1 }, lastNumber: existing.nextNumber },
-    })
-    return `${prefix}-${year}-${String(existing.nextNumber).padStart(existing.padding, '0')}`
+  if (docTypeRecord && !docTypeRecord.active) {
+    throw new Error(
+      `نوع الوثيقة "${docTypeRecord.nameAr || documentType}" معطل حالياً في هذه الشركة ولا يمكن إصدار أرقام جديدة له`
+    )
   }
 
-  // Create new sequence
-  const resetPolicy = await getResetPolicy()
-  await db.numberSequence.create({
-    data: {
-      companyId,
-      branchId,
-      documentType,
-      prefix,
-      fiscalYear: year,
-      nextNumber: 2,
-      padding,
-      resetPolicy,
-      lastNumber: 1,
+  // 2. Locate active TransactionSequence for this doc type and scope
+  let activeSeq: any = null
+  if (docTypeRecord) {
+    activeSeq = await db.transactionSequence.findFirst({
+      where: {
+        companyId,
+        sequenceDocTypeId: docTypeRecord.id,
+        active: true,
+        OR: [
+          { branchScope: 'all' },
+          { branchId: branchId ?? null },
+        ],
+        ...(fiscalYear ? { OR: [{ fiscalYearScope: null }, { fiscalYearScope: fiscalYear }] } : {}),
+      },
+      include: {
+        segments: { orderBy: { segmentNumber: 'asc' } },
+      },
+      orderBy: [{ branchId: 'desc' }, { sequenceNumber: 'asc' }],
+    })
+  }
+
+  const docDate = options?.documentDate ? new Date(options.documentDate) : new Date()
+  const year = fiscalYear ?? docDate.getFullYear()
+  const prefix = activeSeq?.prefix || (await getPrefix(documentType))
+  const padding = activeSeq?.numberLength || (await getNumberLength())
+  const initialValue = activeSeq?.initialValue ?? 1
+  const resetPolicy = activeSeq?.resetPolicy || (await getResetPolicy())
+
+  // Determine effective branch scoping for counter state
+  const effectiveBranchId = activeSeq?.branchScope === 'single_branch' ? branchId ?? null : null
+  const effectiveYear = resetPolicy !== 'never' ? year : null
+
+  // Concurrency-safe atomic generation via transaction + Postgres advisory lock
+  return await db.$transaction(
+    async (tx) => {
+      // 1. Transaction-level advisory lock on PostgreSQL
+      const lockIdentifier = activeSeq ? activeSeq.id : documentType
+      const lockKey = `numseq_${companyId}_${effectiveBranchId || 'none'}_${lockIdentifier}_${effectiveYear || 'all'}`
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`
+
+      // 2. Query sequence row (guaranteed isolated and serialized)
+      let existing: any = null
+      if (activeSeq) {
+        existing = await tx.numberSequence.findFirst({
+          where: {
+            companyId,
+            transactionSequenceId: activeSeq.id,
+            branchId: effectiveBranchId,
+            fiscalYear: effectiveYear,
+          },
+        })
+      }
+
+      // Fallback lookup if no activeSeq-specific counter exists
+      if (!existing) {
+        existing = await tx.numberSequence.findFirst({
+          where: {
+            companyId,
+            branchId: effectiveBranchId,
+            documentType,
+            fiscalYear: effectiveYear,
+          },
+        })
+      }
+
+      let issuedNumber = initialValue
+
+      if (existing) {
+        issuedNumber = Math.max(existing.nextNumber, initialValue)
+        await tx.numberSequence.update({
+          where: { id: existing.id },
+          data: {
+            nextNumber: issuedNumber + 1,
+            lastNumber: issuedNumber,
+            ...(activeSeq && !existing.transactionSequenceId && { transactionSequenceId: activeSeq.id }),
+          },
+        })
+      } else {
+        // Create new sequence state row on first use
+        await tx.numberSequence.create({
+          data: {
+            companyId,
+            branchId: effectiveBranchId,
+            documentType,
+            prefix,
+            fiscalYear: effectiveYear,
+            nextNumber: initialValue + 1,
+            padding,
+            resetPolicy,
+            lastNumber: initialValue,
+            transactionSequenceId: activeSeq?.id ?? null,
+          },
+        })
+        issuedNumber = initialValue
+      }
+
+      // Lock sequence definition against structural modifications once used
+      if (activeSeq && !activeSeq.isLocked) {
+        await tx.transactionSequence.update({
+          where: { id: activeSeq.id },
+          data: { isLocked: true },
+        })
+      }
+
+      // Format document number according to segments or default pattern
+      if (activeSeq?.segments && activeSeq.segments.length > 0) {
+        return resolveSegments(activeSeq.segments, {
+          year,
+          issuedNumber,
+          padding,
+          documentDate: docDate,
+          branchCode: options?.branchCode,
+          prefix,
+        })
+      }
+
+      const finalPrefix = existing?.prefix || prefix
+      const finalPadding = existing?.padding || padding
+      return `${finalPrefix}-${year}-${String(issuedNumber).padStart(finalPadding, '0')}`
     },
-  })
-  return `${prefix}-${year}-${'0'.repeat(padding - 1)}1`
+    {
+      isolationLevel: 'ReadCommitted',
+      maxWait: 20000,
+      timeout: 25000,
+    }
+  )
 }
 
 // Get the list of all document types and their configurable prefixes

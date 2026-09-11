@@ -1,12 +1,24 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/branches/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const branch = await db.branch.findUnique({
-      where: { id },
+
+    if (!auth.isSuperAdmin && auth.authorizedBranchIds.length > 0 && !auth.authorizedBranchIds.includes(id)) {
+      return notFound('الفرع غير موجود')
+    }
+
+    const branch = await db.branch.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         company: { select: { id: true, nameAr: true } },
         warehouses: true,
@@ -26,10 +38,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT /api/erp/branches/[id]
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
 
-    const existing = await db.branch.findUnique({ where: { id } })
+    const existing = await db.branch.findFirst({ where: { id, companyId: auth.companyId } })
     if (!existing) return notFound('الفرع غير موجود')
 
     const nameAr = (body.nameAr || body.name || existing.nameAr).trim()
@@ -40,7 +55,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     // If setting as main, reset other main branches
     if (isMain && !existing.isMain) {
       await db.branch.updateMany({
-        where: { companyId: existing.companyId },
+        where: { companyId: auth.companyId },
         data: { isMain: false },
       })
     }
@@ -72,11 +87,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 // DELETE /api/erp/branches/[id]
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const existing = await db.branch.findUnique({
-      where: { id },
+    const existing = await db.branch.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         _count: { select: { users: true, warehouses: true } },
       },

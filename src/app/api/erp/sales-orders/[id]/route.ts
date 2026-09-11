@@ -1,12 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/sales-orders/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.salesOrder.findUnique({
-      where: { id },
+    const item = await db.salesOrder.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         partner: true,
         lines: { include: { product: true } },
@@ -22,10 +30,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT — update sales order details, status, or lines
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.salesOrder.findUnique({
-      where: { id },
+    const exists = await db.salesOrder.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { lines: true },
     })
     if (!exists) return notFound('Sales order not found')
@@ -33,6 +44,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     // Only allow full data edit if status is draft
     if (exists.status !== 'draft' && body.status === undefined) {
       return badRequest('يمكن فقط تعديل أوامر البيع التي في حالة مسودة / Only draft sales orders can be edited')
+    }
+
+    // Constraint 4: Foreign Key checks
+    if (body.partnerId || body.branchId || body.warehouseId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, {
+        partnerId: body.partnerId,
+        branchId: body.branchId,
+        warehouseId: body.warehouseId,
+      })
+      if (!fkCheck.valid && fkCheck.error) return fkCheck.error
     }
 
     const dataToUpdate: any = {}
@@ -49,6 +70,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     // If lines are provided in request body, calculate line totals and update lines atomically
     if (Array.isArray(body.lines)) {
+      const lineProductIds = body.lines.map((l: any) => l.productId).filter(Boolean)
+      const linesFkCheck = await verifyTenantForeignKeys(auth, { productIds: lineProductIds })
+      if (!linesFkCheck.valid && linesFkCheck.error) return linesFkCheck.error
+
       let subtotal = 0
       let taxTotal = 0
       const processedLines = body.lines.map((l: any) => {
@@ -70,38 +95,38 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           total,
         }
       })
-      const discount = body.discount !== undefined ? body.discount : (exists.discount ?? 0)
-      const total = subtotal + taxTotal - discount
+      const total = subtotal + taxTotal - (body.discount ?? exists.discount ?? 0)
 
       dataToUpdate.subtotal = subtotal
       dataToUpdate.taxTotal = taxTotal
-      dataToUpdate.discount = discount
       dataToUpdate.total = total
+      if (body.discount !== undefined) dataToUpdate.discount = body.discount
 
-      const updated = await db.$transaction(async (tx) => {
-        await tx.salesOrderLine.deleteMany({ where: { orderId: id } })
-        return tx.salesOrder.update({
-          where: { id },
+      // Replace lines inside transaction
+      await db.$transaction([
+        db.salesOrderLine.deleteMany({ where: { orderId: exists.id } }),
+        db.salesOrder.update({
+          where: { id: exists.id },
           data: {
             ...dataToUpdate,
             lines: { create: processedLines },
           },
-          include: {
-            partner: true,
-            lines: { include: { product: true } },
-          },
-        })
+        }),
+      ])
+    } else {
+      if (body.discount !== undefined) {
+        dataToUpdate.discount = body.discount
+        dataToUpdate.total = exists.subtotal + exists.taxTotal - body.discount
+      }
+      await db.salesOrder.update({
+        where: { id: exists.id },
+        data: dataToUpdate,
       })
-      return ok(updated)
     }
 
-    const updated = await db.salesOrder.update({
-      where: { id },
-      data: dataToUpdate,
-      include: {
-        partner: true,
-        lines: { include: { product: true } },
-      },
+    const updated = await db.salesOrder.findFirst({
+      where: { id: exists.id, companyId: auth.companyId },
+      include: { lines: true, partner: true },
     })
     return ok(updated)
   } catch (e: any) {
@@ -109,23 +134,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-// DELETE — delete sales order if draft or cancelled
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.salesOrder.findUnique({ where: { id } })
+    const exists = await db.salesOrder.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Sales order not found')
 
-    if (exists.status !== 'draft' && exists.status !== 'cancelled') {
-      return badRequest('يمكن فقط حذف أوامر البيع المسودة أو الملغية / Only draft or cancelled sales orders can be deleted')
+    if (exists.status !== 'draft') {
+      return badRequest('فقط أوامر المسودة يمكن حذفها / Only draft sales orders can be deleted')
     }
 
-    await db.$transaction(async (tx) => {
-      await tx.stockReservation.deleteMany({ where: { documentType: 'sales_order', documentId: id } })
-      await tx.salesOrderLine.deleteMany({ where: { orderId: id } })
-      await tx.salesOrder.delete({ where: { id } })
-    })
-
+    await db.salesOrder.delete({ where: { id: exists.id } })
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)

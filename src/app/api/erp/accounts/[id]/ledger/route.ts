@@ -3,11 +3,11 @@
 
 import { db } from '@/lib/db'
 import { ok, notFound, serverError, parsePagination } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { signedBalance } from '@/lib/erp/account-classes'
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.LEDGER, 'canRead')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
@@ -37,14 +37,21 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const dateFilter: Record<string, Date> = {}
     if (from) dateFilter.gte = new Date(from)
     if (to) dateFilter.lte = new Date(to)
-    const entryWhere = Object.keys(dateFilter).length ? { postingDate: dateFilter, state: 'posted' } : { state: 'posted' }
+    const entryWhere: any = {
+      companyId: auth.companyId,
+      state: 'posted',
+      ...(Object.keys(dateFilter).length ? { postingDate: dateFilter } : {}),
+    }
 
     // Opening balance = everything strictly before `from`.
     let openingDebit = 0
     let openingCredit = 0
     if (from) {
       const opening = await db.journalLine.aggregate({
-        where: { accountId: { in: accountIds }, entry: { postingDate: { lt: new Date(from) }, state: 'posted' } },
+        where: {
+          accountId: { in: accountIds },
+          entry: { companyId: auth.companyId, postingDate: { lt: new Date(from) }, state: 'posted' },
+        },
         _sum: { debit: true, credit: true },
       })
       openingDebit = opening._sum.debit ?? 0

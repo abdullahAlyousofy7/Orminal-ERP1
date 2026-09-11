@@ -1,13 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, badRequest, serverError, notFound } from '@/lib/erp/api-response'
 import { postJournalEntry, inventoryAdjustmentPosting } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/stock-takes/[id]
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const st = await db.inventoryAdjustment.findUnique({
-      where: { id },
+    const st = await db.inventoryAdjustment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         warehouse: { select: { id: true, nameAr: true, nameEn: true, code: true } },
         lines: {
@@ -49,11 +56,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 // PUT /api/erp/stock-takes/[id]
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
 
-    const existing = await db.inventoryAdjustment.findUnique({
-      where: { id },
+    const existing = await db.inventoryAdjustment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { lines: true, warehouse: true },
     })
     if (!existing) return notFound('جلسة الجرد غير موجودة')
@@ -63,15 +73,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       return badRequest('الجرد مُرحّل بالفعل، لا يمكن ترحيله مرة أخرى')
     }
 
-    const companyId = existing.companyId
+    const companyId = auth.companyId
     const warehouseId = existing.warehouseId
     let newStatus = body.status ?? existing.status
     if (newStatus === 'completed') newStatus = 'posted'
 
     let linesData = existing.lines
     if (body.items && Array.isArray(body.items)) {
-      // Re-create lines with latest count & variances
-      await db.inventoryAdjustmentLine.deleteMany({ where: { adjustmentId: id } })
+      await db.inventoryAdjustmentLine.deleteMany({ where: { adjustmentId: existing.id } })
 
       linesData = await Promise.all(
         body.items.map(async (it: any) => {
@@ -81,7 +90,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           const cost = Number(it.unitCost ?? 0)
           return db.inventoryAdjustmentLine.create({
             data: {
-              adjustmentId: id,
+              adjustmentId: existing.id,
               productId: it.productId,
               systemQty: sysQty,
               countedQty: countQty,
@@ -103,12 +112,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           totalVarianceValue += varValue
 
           if (l.variance !== 0) {
-            // Append-only stock move
             await tx.stockMove.create({
               data: {
                 companyId,
                 documentType: 'adjustment',
-                documentId: id,
+                documentId: existing.id,
                 productId: l.productId,
                 destWarehouseId: l.variance > 0 ? warehouseId : null,
                 sourceWarehouseId: l.variance < 0 ? warehouseId : null,
@@ -120,7 +128,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
               },
             })
 
-            // Update Stock Quant so system stock equals counted quantity
             const quant = await tx.stockQuant.findFirst({
               where: { productId: l.productId, warehouseId, locationId: null, lotId: null },
             })
@@ -142,7 +149,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         }
       })
 
-      // Post Journal Entry for total discrepancy value
       if (totalVarianceValue !== 0 && !journalEntryId) {
         const je = await postJournalEntry({
           companyId,
@@ -150,15 +156,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           postingDate: new Date(),
           description: `تسوية جرد مخزني ${existing.code}`,
           refType: 'inventory_adjustment',
-          refId: id,
+          refId: existing.id,
           lines: inventoryAdjustmentPosting({ varianceAmount: totalVarianceValue }),
+          userId: auth.userId,
         })
         journalEntryId = je.id
       }
     }
 
     const updated = await db.inventoryAdjustment.update({
-      where: { id },
+      where: { id: existing.id },
       data: {
         status: newStatus,
         journalEntryId,
@@ -196,12 +203,20 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 // DELETE /api/erp/stock-takes/[id]
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const existing = await db.inventoryAdjustment.findUnique({ where: { id } })
+    const existing = await db.inventoryAdjustment.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!existing) return notFound('جلسة الجرد غير موجودة')
     if (existing.status === 'posted') return badRequest('لا يمكن حذف جلسة جرد مُرحّلة')
 
-    await db.inventoryAdjustment.delete({ where: { id } })
+    await db.$transaction(async (tx) => {
+      await tx.inventoryAdjustmentLine.deleteMany({ where: { adjustmentId: existing.id } })
+      await tx.inventoryAdjustment.delete({ where: { id: existing.id } })
+    })
     return ok({ deleted: true })
   } catch (e: any) {
     return serverError(e.message)

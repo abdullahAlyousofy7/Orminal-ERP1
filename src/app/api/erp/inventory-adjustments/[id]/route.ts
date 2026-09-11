@@ -1,12 +1,19 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.inventoryAdjustment.findUnique({
-      where: { id },
+    const item = await db.inventoryAdjustment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         warehouse: true,
         reasonCode: true,
@@ -23,17 +30,20 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT — update; if transitioning to 'posted': create StockMoves, update StockQuants, post journal
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.inventoryAdjustment.findUnique({
-      where: { id },
+    const exists = await db.inventoryAdjustment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { lines: { include: { product: true } } },
     })
     if (!exists) return notFound('Inventory adjustment not found')
     if (exists.status === 'posted' || exists.status === 'cancelled')
       return badRequest('Cannot edit posted or cancelled adjustment')
 
-    const { id: _id, lines: _lines, createdAt: _c, updatedAt: _u, ...rest } = body
+    const { id: _id, companyId: _c, createdBy: _u, lines: _lines, createdAt: _ca, updatedAt: _ua, ...rest } = body
 
     // If transitioning to posted: process stock and journal
     if (rest.status === 'posted' && exists.status !== 'posted') {
@@ -44,12 +54,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           const variance = (l.countedQty ?? 0) - (l.systemQty ?? 0)
           if (variance === 0) continue
 
-          // StockMove
           await tx.stockMove.create({
             data: {
-              companyId: exists.companyId,
+              companyId: auth.companyId,
               documentType: 'adjustment',
-              documentId: id,
+              documentId: exists.id,
               productId: l.productId,
               sourceWarehouseId: variance < 0 ? exists.warehouseId : undefined,
               destWarehouseId: variance > 0 ? exists.warehouseId : undefined,
@@ -62,7 +71,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
             },
           })
 
-          // Update StockQuant
           const quant = await tx.stockQuant.findFirst({
             where: { productId: l.productId, warehouseId: exists.warehouseId, locationId: null, lotId: null },
           })
@@ -85,7 +93,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           if (variance > 0) gainAmount += lineValue
           else lossAmount += lineValue
         }
-        await tx.inventoryAdjustment.update({ where: { id }, data: { status: 'posted' } })
+        await tx.inventoryAdjustment.update({ where: { id: exists.id }, data: { status: 'posted' } })
       })
 
       const journalLines: any[] = []
@@ -100,42 +108,51 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
       if (journalLines.length > 0) {
         const je = await postJournalEntry({
-          companyId: exists.companyId,
+          companyId: auth.companyId,
           journalType: 'general',
           postingDate: new Date(),
           description: `تسوية مخزون ${exists.code}`,
           refType: 'inventory_adjustment',
-          refId: id,
+          refId: exists.id,
           lines: journalLines,
+          userId: auth.userId,
         })
         await db.inventoryAdjustment.update({
-          where: { id },
+          where: { id: exists.id },
           data: { journalEntryId: je.id },
         })
       }
-
-      const updated = await db.inventoryAdjustment.findUnique({
-        where: { id },
-        include: { lines: { include: { product: true } }, warehouse: true, reasonCode: true },
-      })
-      return ok(updated)
+    } else {
+      await db.inventoryAdjustment.update({ where: { id: exists.id }, data: rest })
     }
 
-    const updated = await db.inventoryAdjustment.update({ where: { id }, data: rest })
+    const updated = await db.inventoryAdjustment.findFirst({
+      where: { id: exists.id, companyId: auth.companyId },
+      include: { lines: { include: { product: true } } },
+    })
     return ok(updated)
   } catch (e: any) {
     return serverError(e.message)
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = await params
-    const exists = await db.inventoryAdjustment.findUnique({ where: { id } })
-    if (!exists) return notFound('Inventory adjustment not found')
-    if (exists.status !== 'draft') return badRequest('Only draft adjustments can be deleted')
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
 
-    await db.inventoryAdjustment.delete({ where: { id } })
+    const { id } = await params
+    const exists = await db.inventoryAdjustment.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
+    if (!exists) return notFound('Inventory adjustment not found')
+    if (exists.status === 'posted') return badRequest('Cannot delete posted adjustment')
+
+    await db.$transaction(async (tx) => {
+      await tx.inventoryAdjustmentLine.deleteMany({ where: { adjustmentId: exists.id } })
+      await tx.inventoryAdjustment.delete({ where: { id: exists.id } })
+    })
+
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)

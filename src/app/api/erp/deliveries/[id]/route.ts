@@ -1,12 +1,19 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, cogsPosting } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.delivery.findUnique({
-      where: { id },
+    const item = await db.delivery.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         partner: true,
         warehouse: true,
@@ -23,17 +30,20 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.delivery.findUnique({
-      where: { id },
+    const exists = await db.delivery.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { lines: true },
     })
     if (!exists) return notFound('Delivery not found')
     if (exists.status === 'done' || exists.status === 'cancelled')
       return badRequest('Cannot edit done or cancelled delivery')
 
-    const { id: _id, lines, createdAt: _c, updatedAt: _u, ...rest } = body
+    const { id: _id, companyId: _c, createdBy: _u, lines, createdAt: _ca, updatedAt: _ua, ...rest } = body
 
     // If transitioning to done: process stock
     if (rest.status === 'done' && exists.status !== 'done') {
@@ -57,75 +67,78 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
             await tx.stockMove.create({
               data: {
-                companyId: exists.companyId,
+                companyId: auth.companyId,
                 documentType: 'delivery',
-                documentId: id,
+                documentId: exists.id,
                 productId: l.productId,
                 sourceWarehouseId: exists.warehouseId,
                 quantity: l.deliveredQty,
                 uomId: l.uomId,
-                state: 'done',
-                valuationAmount: lineCost,
                 costPrice: cost,
+                state: 'done',
                 postingDate: new Date(),
               },
             })
 
-            if (quant) {
-              await tx.stockQuant.update({
-                where: { id: quant.id },
-                data: { quantity: { decrement: l.deliveredQty } },
-              })
-            }
+            await tx.stockQuant.update({
+              where: { id: quant!.id },
+              data: { quantity: { decrement: l.deliveredQty } },
+            })
           }
-          await tx.delivery.update({ where: { id }, data: { status: 'done' } })
         })
+
+        // Post COGS journal entry
+        if (cogsAmount > 0) {
+          const postingLines = cogsPosting({ amount: cogsAmount })
+          const je = await postJournalEntry({
+            companyId: auth.companyId,
+            branchId: exists.branchId ?? undefined,
+            journalType: 'general',
+            postingDate: exists.deliveryDate,
+            description: `تكلفة بضاعة مباعة — سند تسليم ${exists.code}`,
+            refType: 'delivery',
+            refId: exists.id,
+            lines: postingLines,
+            userId: auth.userId,
+          })
+          await db.delivery.update({
+            where: { id: exists.id },
+            data: { journalEntryId: je.id },
+          })
+        }
       } catch (err: any) {
-        return badRequest(err.message || 'خطأ في عملية إخراج المخزون')
+        return badRequest(err.message)
       }
-
-      if (cogsAmount > 0) {
-        const je = await postJournalEntry({
-          companyId: exists.companyId,
-          branchId: exists.branchId ?? undefined,
-          journalType: 'general',
-          postingDate: new Date(),
-          description: `تكلفة بضاعة مباعة - تسليم ${exists.code}`,
-          refType: 'delivery',
-          refId: id,
-          lines: cogsPosting({ amount: cogsAmount }),
-        })
-        await db.delivery.update({ where: { id }, data: { journalEntryId: je.id } })
-      }
-
-      if (exists.salesOrderId) {
-        await db.salesOrder.update({
-          where: { id: exists.salesOrderId },
-          data: { deliveryStatus: 'delivered', status: 'delivered' },
-        })
-      }
-      const updated = await db.delivery.findUnique({
-        where: { id },
-        include: { lines: { include: { product: true } } },
-      })
-      return ok(updated)
     }
 
-    const updated = await db.delivery.update({ where: { id }, data: rest })
+    const updated = await db.delivery.update({
+      where: { id: exists.id },
+      data: rest,
+      include: { lines: { include: { product: true } } },
+    })
     return ok(updated)
   } catch (e: any) {
     return serverError(e.message)
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = await params
-    const exists = await db.delivery.findUnique({ where: { id } })
-    if (!exists) return notFound('Delivery not found')
-    if (exists.status !== 'draft') return badRequest('Only draft deliveries can be deleted')
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
 
-    await db.delivery.delete({ where: { id } })
+    const { id } = await params
+    const exists = await db.delivery.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
+    if (!exists) return notFound('Delivery not found')
+    if (exists.status === 'done') return badRequest('Cannot delete completed delivery')
+
+    await db.$transaction(async (tx) => {
+      await tx.deliveryLine.deleteMany({ where: { deliveryId: exists.id } })
+      await tx.delivery.delete({ where: { id: exists.id } })
+    })
+
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)

@@ -2,13 +2,20 @@ import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, purchaseReturnPosting } from '@/lib/erp/accounting-engine'
 import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/purchase-returns/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.purchaseReturn.findUnique({
-      where: { id },
+    const item = await db.purchaseReturn.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         partner: true,
         lines: { include: { product: true } },
@@ -18,8 +25,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
     let journalEntry: any = null
     if (item.journalEntryId) {
-      journalEntry = await db.journalEntry.findUnique({
-        where: { id: item.journalEntryId },
+      journalEntry = await db.journalEntry.findFirst({
+        where: { id: item.journalEntryId, companyId: auth.companyId },
         include: {
           lines: { include: { account: { select: { code: true, nameAr: true, nameEn: true } } } },
         },
@@ -35,25 +42,29 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT — update (only draft) OR action=approve|ship|debit|close|cancel
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json().catch(() => ({}))
     const action = body.action
 
-    const exists = await db.purchaseReturn.findUnique({ where: { id } })
+    const exists = await db.purchaseReturn.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Purchase return not found')
 
     if (action === 'approve') {
       if (exists.status !== 'draft') return badRequest('Only draft returns can be approved')
-      const updated = await db.purchaseReturn.update({ where: { id }, data: { status: 'approved' } })
+      const updated = await db.purchaseReturn.update({ where: { id: exists.id }, data: { status: 'approved' } })
       return ok(updated)
     }
     if (action === 'ship') {
       if (exists.status !== 'approved') return badRequest('Only approved returns can be shipped')
-      const updated = await db.purchaseReturn.update({ where: { id }, data: { status: 'shipped' } })
+      const updated = await db.purchaseReturn.update({ where: { id: exists.id }, data: { status: 'shipped' } })
       return ok(updated)
     }
     if (action === 'debit') {
-      // Issue actual Debit Note: post balanced accounting journal entry + update supplier balance
       if (exists.status === 'debited' || exists.status === 'closed' || exists.status === 'cancelled') {
         return badRequest('Return already debited or cancelled')
       }
@@ -62,7 +73,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
       try {
         const je = await postJournalEntry({
-          companyId: exists.companyId,
+          companyId: auth.companyId,
           branchId: exists.branchId ?? undefined,
           journalType: 'purchase',
           postingDate: exists.date ? new Date(exists.date) : new Date(),
@@ -75,20 +86,19 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
             taxTotal: exists.taxTotal,
             partnerId: exists.partnerId,
           }),
-          userId: body.userId,
+          userId: auth.userId,
         })
         journalEntryId = je.id
       } catch (err: any) {
         return badRequest(`فشل إصدار قيد الإشعار المدين: ${err.message}`)
       }
 
-      // Create an official PurchaseCreditNote (Debit Note) tracking record & update balances transactionally
       const result = await db.$transaction(async (tx) => {
         try {
-          const pcnCode = await nextNumber('purchase_credit_note', exists.companyId, exists.branchId ?? undefined)
+          const pcnCode = await nextNumber('purchase_credit_note', auth.companyId, exists.branchId ?? undefined)
           await tx.purchaseCreditNote.create({
             data: {
-              companyId: exists.companyId,
+              companyId: auth.companyId,
               branchId: exists.branchId,
               code: pcnCode,
               partnerId: exists.partnerId,
@@ -108,18 +118,18 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         }
 
         await tx.purchaseReturn.update({
-          where: { id },
+          where: { id: exists.id },
           data: { status: 'debited', ...(journalEntryId ? { journalEntryId } : {}) },
         })
 
-        // Decrease AP (partner balance — supplier is owed less)
+        // Decrease AP (partner balance)
         await tx.partner.update({
           where: { id: exists.partnerId },
           data: { currentBalance: { decrement: exists.total } },
         })
 
-        return tx.purchaseReturn.findUnique({
-          where: { id },
+        return tx.purchaseReturn.findFirst({
+          where: { id: exists.id, companyId: auth.companyId },
           include: { partner: true, lines: { include: { product: true } } },
         })
       })
@@ -128,14 +138,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     if (action === 'close') {
       if (exists.status !== 'debited') return badRequest('Only debited returns can be closed')
-      const updated = await db.purchaseReturn.update({ where: { id }, data: { status: 'closed' } })
+      const updated = await db.purchaseReturn.update({ where: { id: exists.id }, data: { status: 'closed' } })
       return ok(updated)
     }
     if (action === 'cancel') {
       if (exists.status === 'debited' || exists.status === 'closed') {
         return badRequest('Cannot cancel debited/closed returns')
       }
-      const updated = await db.purchaseReturn.update({ where: { id }, data: { status: 'cancelled' } })
+      const updated = await db.purchaseReturn.update({ where: { id: exists.id }, data: { status: 'cancelled' } })
       return ok(updated)
     }
 
@@ -143,7 +153,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (exists.status !== 'draft') {
       return badRequest('لا يمكن تعديل المرتجع المرحّل أو المغلق أو الملغي. التعديل متاح للمسودات فقط.')
     }
-    const { id: _id, lines, createdAt: _c, updatedAt: _u, status: _s, ...rest } = body
+    const { id: _id, companyId: _c, createdBy: _u, lines, createdAt: _ca, updatedAt: _ua, status: _s, ...rest } = body
 
     if (rest.date) {
       rest.date = new Date(rest.date)
@@ -152,7 +162,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const targetInvoiceId = rest.originalInvoiceId ?? exists.originalInvoiceId
     const validLines = Array.isArray(lines) ? lines.filter((l: any) => l.productId && Number(l.quantity) > 0) : []
 
-    // Validate quantities if linked to an original invoice
     if (targetInvoiceId) {
       const invoiceLines = await db.purchaseInvoiceLine.findMany({
         where: { invoiceId: targetInvoiceId },
@@ -173,7 +182,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       }
     }
 
-    // Recalculate totals from lines
     let subtotal = 0, taxTotal = 0
     for (const l of validLines) {
       const lineSub = (Number(l.quantity) || 0) * (Number(l.unitCost) || 0)
@@ -184,15 +192,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const total = subtotal + taxTotal
 
     const updated = await db.$transaction(async (tx) => {
-      // Update main record fields + totals
       await tx.purchaseReturn.update({
-        where: { id },
+        where: { id: exists.id },
         data: { ...rest, subtotal, taxTotal, total },
       })
 
-      // Replace lines: delete old lines, create new lines if provided
       if (Array.isArray(lines)) {
-        await tx.purchaseReturnLine.deleteMany({ where: { returnId: id } })
+        await tx.purchaseReturnLine.deleteMany({ where: { returnId: exists.id } })
         if (validLines.length > 0) {
           await tx.purchaseReturnLine.createMany({
             data: validLines.map((l: any) => {
@@ -200,7 +206,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
               const cost = Number(l.unitCost) || 0
               const tax = Number(l.taxRate) || 0
               return {
-                returnId: id,
+                returnId: exists.id,
                 productId: l.productId,
                 quantity: qty,
                 unitCost: cost,
@@ -212,8 +218,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         }
       }
 
-      return tx.purchaseReturn.findUnique({
-        where: { id },
+      return tx.purchaseReturn.findFirst({
+        where: { id: exists.id, companyId: auth.companyId },
         include: { partner: true, lines: { include: { product: true } } },
       })
     })
@@ -225,18 +231,23 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 // DELETE — only draft (or cancelled if never posted)
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.purchaseReturn.findUnique({ where: { id } })
+    const exists = await db.purchaseReturn.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Purchase return not found')
     if (exists.status !== 'draft') {
-      return badRequest('لا يمكن حذف المرتجع المرحّل أو المعالج لحماية القيود المحاسبية ورصيد المخزون وحساب المورد.')
+      return badRequest('لا يمكن حذف المرتجع المرحّل أو المعالج.')
     }
 
     await db.$transaction(async (tx) => {
-      await tx.purchaseReturnLine.deleteMany({ where: { returnId: id } })
-      await tx.purchaseReturn.delete({ where: { id } })
+      await tx.purchaseReturnLine.deleteMany({ where: { returnId: exists.id } })
+      await tx.purchaseReturn.delete({ where: { id: exists.id } })
     })
 
     return ok({ success: true })
@@ -244,4 +255,3 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return serverError(e.message)
   }
 }
-

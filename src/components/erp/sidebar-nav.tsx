@@ -131,7 +131,6 @@ const NAV: NavGroup[] = [
           { key: 'chart-of-accounts', labelKey: 'module.chart-of-accounts', icon: BookOpen },
           { key: 'analytic-accounts', labelKey: 'module.analytic-accounts', icon: GitBranch },
           { key: 'cost-centers', labelKey: 'module.cost-centers', icon: GitBranch },
-          { key: 'fiscal-periods', labelKey: 'module.fiscal-periods', icon: CalendarClock },
           { key: 'opening-balances', labelKey: 'module.opening-balances', icon: FileSpreadsheet },
           { key: 'financial-statement-designer', labelKey: 'module.financial-statement-designer', icon: FileBarChart },
           { key: 'payment-methods', labelKey: 'module.payment-methods', icon: Receipt },
@@ -610,6 +609,7 @@ const NAV: NavGroup[] = [
 
 export function SidebarNav() {
   const { activeModule, setActiveModule } = useNav()
+  const currentModule = activeModule === 'fiscal-periods' ? 'config-fiscal-periods' : activeModule
   const { t } = useT()
   const [dir, setDir] = useState<'rtl' | 'ltr'>('rtl')
 
@@ -634,8 +634,8 @@ export function SidebarNav() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
     const initial = new Set<string>()
     for (const group of NAV) {
-      const hasItem = group.items?.some((item) => item.key === activeModule)
-      const hasSubItem = group.subGroups?.some((sg) => sg.items.some((i) => i.key === activeModule))
+      const hasItem = group.items?.some((item) => item.key === currentModule)
+      const hasSubItem = group.subGroups?.some((sg) => sg.items.some((i) => i.key === currentModule))
       if (hasItem || hasSubItem) initial.add(group.labelKey)
       if (!group.subGroups && group.items?.length === 1) initial.add(group.labelKey)
     }
@@ -647,7 +647,7 @@ export function SidebarNav() {
     for (const group of NAV) {
       if (group.subGroups) {
         for (const sg of group.subGroups) {
-          if (sg.items.some((item) => item.key === activeModule)) {
+          if (sg.items.some((item) => item.key === currentModule)) {
             initial.add(sg.labelKey)
           }
         }
@@ -660,17 +660,17 @@ export function SidebarNav() {
     for (const group of NAV) {
       if (group.subGroups) {
         for (const sg of group.subGroups) {
-          if (sg.items.some((item) => item.key === activeModule)) {
+          if (sg.items.some((item) => item.key === currentModule)) {
             setExpandedGroups((prev) => new Set(prev).add(group.labelKey))
             setExpandedSubGroups((prev) => new Set(prev).add(sg.labelKey))
           }
         }
       }
-      if (group.items?.some((i) => i.key === activeModule)) {
+      if (group.items?.some((i) => i.key === currentModule)) {
         setExpandedGroups((prev) => new Set(prev).add(group.labelKey))
       }
     }
-  }, [activeModule])
+  }, [currentModule])
 
   const toggleGroup = (labelKey: string) => {
     setExpandedGroups((prev) => {
@@ -712,14 +712,14 @@ export function SidebarNav() {
             const GroupIcon = group.icon
             const isExpanded = expandedGroups.has(group.labelKey)
             const hasSubGroups = !!group.subGroups && group.subGroups.length > 0
-            const hasActiveChild = (hasSubGroups && group.subGroups!.some((sg) => sg.items.some((i) => i.key === activeModule))) ||
-              (group.items?.some((item) => item.key === activeModule) ?? false)
+            const hasActiveChild = (hasSubGroups && group.subGroups!.some((sg) => sg.items.some((i) => i.key === currentModule))) ||
+              (group.items?.some((item) => item.key === currentModule) ?? false)
             const isSingleItem = !hasSubGroups && group.items?.length === 1
 
             if (isSingleItem && group.items) {
               const item = group.items[0]
               const Icon = item.icon
-              const active = activeModule === item.key
+              const active = currentModule === item.key
               return (
                 <button
                   key={group.labelKey}
@@ -767,7 +767,7 @@ export function SidebarNav() {
                       group.subGroups!.map((sg) => {
                         const SgIcon = sg.icon || BookOpen
                         const isSgExpanded = expandedSubGroups.has(sg.labelKey)
-                        const hasSgActiveChild = sg.items.some((i) => i.key === activeModule)
+                        const hasSgActiveChild = sg.items.some((i) => i.key === currentModule)
 
                         return (
                           <div key={sg.labelKey} className="my-0.5">
@@ -795,7 +795,7 @@ export function SidebarNav() {
                               <div className="flex flex-col gap-0.5 mt-0.5 ms-3 ps-2 border-s border-sidebar-border/40">
                                 {sg.items.map((item) => {
                                   const Icon = item.icon
-                                  const active = activeModule === item.key
+                                  const active = currentModule === item.key
                                   return (
                                     <button
                                       key={item.key}
@@ -820,7 +820,7 @@ export function SidebarNav() {
                       })}
                     {group.items?.map((item) => {
                       const Icon = item.icon
-                      const active = activeModule === item.key
+                      const active = currentModule === item.key
                       return (
                         <button
                           key={item.key}

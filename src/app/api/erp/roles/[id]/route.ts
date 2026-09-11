@@ -2,6 +2,7 @@ import { db } from '@/lib/db'
 import {
   ok, badRequest, notFound, serverError, forbidden,
 } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 // Module definitions used to auto-provision Permission rows when an admin
 // first configures a role's permission matrix. Permission has no @@unique
@@ -33,8 +34,11 @@ async function getOrCreateModulePermission(moduleCode: string) {
   })
 }
 
-export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const role = await db.role.findUnique({
       where: { id },
@@ -67,6 +71,9 @@ interface PermissionPayload {
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
     const role = await db.role.findUnique({ where: { id } })
@@ -121,8 +128,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const role = await db.role.findUnique({ where: { id } })
     if (!role) return notFound('الدور غير موجود')

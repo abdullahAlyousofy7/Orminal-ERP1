@@ -4,14 +4,14 @@
 
 import { db } from '@/lib/db'
 import { created, list, notFound, serverError, unprocessableEntity, conflict, badRequest } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 import { createAccount } from '@/lib/erp/account-write'
 import { fetchAccountBalances, suggestChildCode } from '@/lib/erp/account-service'
 import { signedBalance } from '@/lib/erp/account-classes'
 import type { AccountClass } from '@/lib/erp/account-classes'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canRead')
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
   try {
     const { id } = await params
@@ -23,7 +23,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       orderBy: { code: 'asc' },
       include: { _count: { select: { children: true, journalLines: true } } },
     })
-    const balances = await fetchAccountBalances(children.map((c) => c.id))
+    const balances = await fetchAccountBalances(children.map((c) => c.id), auth.companyId)
     const data = children.map((c) => {
       const b = balances.get(c.id) ?? { debit: 0, credit: 0 }
       return {
@@ -40,7 +40,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canCreate')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canCreate' })
   if (isAuthFailure(auth)) return auth
   try {
     const { id } = await params

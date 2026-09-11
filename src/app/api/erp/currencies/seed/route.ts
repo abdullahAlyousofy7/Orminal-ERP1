@@ -1,8 +1,12 @@
 import { db } from '@/lib/db'
 import { ok, serverError } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
-export async function POST() {
+export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'currencies', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const existingCount = await db.currency.count()
     if (existingCount > 0) {
       return ok({ message: 'العملات موجودة بالفعل بالنظام', count: existingCount })

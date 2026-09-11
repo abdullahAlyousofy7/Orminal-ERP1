@@ -1,11 +1,15 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { serverError, parsePagination } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 const ALLOWED_ACTIONS = ['create', 'update', 'delete', 'post', 'reverse', 'cancel', 'approve', 'login', 'logout', 'export']
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const url = new URL(req.url)
     const action = url.searchParams.get('action') || undefined
     const moduleCode = url.searchParams.get('module') || url.searchParams.get('moduleCode') || undefined
@@ -15,6 +19,9 @@ export async function GET(req: Request) {
     const { page, pageSize, skip } = parsePagination(req)
 
     const where: any = {}
+    if (!auth.isSuperAdmin) {
+      where.companyId = auth.companyId
+    }
     if (action && ALLOWED_ACTIONS.includes(action)) where.action = action
     if (moduleCode) where.moduleCode = moduleCode
     if (userId) where.userId = userId
@@ -41,16 +48,17 @@ export async function GET(req: Request) {
       db.auditLog.count({ where }),
     ])
 
-    // KPI counts (independent of pagination)
+    // KPI counts (scoped to company)
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
+    const companyScope = !auth.isSuperAdmin ? { companyId: auth.companyId } : {}
     const [todayCount, createAction, updateAction, deleteAction, postAction, byModuleRaw] = await Promise.all([
-      db.auditLog.count({ where: { createdAt: { gte: startOfDay } } }),
-      db.auditLog.count({ where: { action: 'create' } }),
-      db.auditLog.count({ where: { action: 'update' } }),
-      db.auditLog.count({ where: { action: 'delete' } }),
-      db.auditLog.count({ where: { action: 'post' } }),
-      db.auditLog.groupBy({ by: ['moduleCode'], _count: true }),
+      db.auditLog.count({ where: { ...companyScope, createdAt: { gte: startOfDay } } }),
+      db.auditLog.count({ where: { ...companyScope, action: 'create' } }),
+      db.auditLog.count({ where: { ...companyScope, action: 'update' } }),
+      db.auditLog.count({ where: { ...companyScope, action: 'delete' } }),
+      db.auditLog.count({ where: { ...companyScope, action: 'post' } }),
+      db.auditLog.groupBy({ by: ['moduleCode'], where: companyScope, _count: true }),
     ])
 
     const byModule = byModuleRaw.reduce((acc: Record<string, number>, r) => {

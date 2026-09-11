@@ -5,7 +5,7 @@
 
 import { db } from '@/lib/db'
 import { ok, notFound, serverError, unprocessableEntity, conflict, badRequest } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { COA_ACTIONS, isAuthFailure, requireCapability, requireAuthContext } from '@/lib/erp/rbac'
 import { auditAccount, diffFields } from '@/lib/erp/audit'
 import {
   deriveAccountFields,
@@ -32,8 +32,8 @@ const DETAIL_INCLUDE = {
   _count: { select: { children: true, journalLines: true } },
 } as const
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canRead')
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
@@ -41,8 +41,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     const item = await db.account.findUnique({ where: { id }, include: DETAIL_INCLUDE })
     if (!item) return notFound('الحساب غير موجود')
 
-    // Own balance
-    const own = (await fetchAccountBalances([id])).get(id) ?? { debit: 0, credit: 0 }
+    // Own balance scoped to authenticated company
+    const own = (await fetchAccountBalances([id], auth.companyId)).get(id) ?? { debit: 0, credit: 0 }
 
     // Subtree aggregate (group accounts)
     let aggDebit = own.debit
@@ -55,7 +55,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       })
       descendantCount = descendants.length
       if (descendants.length) {
-        const descBalances = await fetchAccountBalances(descendants.map((d) => d.id))
+        const descBalances = await fetchAccountBalances(descendants.map((d) => d.id), auth.companyId)
         for (const b of descBalances.values()) {
           aggDebit += b.debit
           aggCredit += b.credit
@@ -105,7 +105,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canUpdate')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canUpdate' })
   if (isAuthFailure(auth)) return auth
 
   try {
@@ -286,7 +286,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canDelete')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canDelete' })
   if (isAuthFailure(auth)) return auth
 
   try {

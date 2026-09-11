@@ -1,17 +1,33 @@
 import { db } from '@/lib/db'
 import { list, serverError, parsePagination } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/stock-on-hand — list stock quants with product+warehouse, filter by warehouse/product
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const url = new URL(req.url)
     const warehouseId = url.searchParams.get('warehouseId')
     const productId = url.searchParams.get('productId')
     const onlyPositive = url.searchParams.get('onlyPositive')
 
-    const where: any = {}
-    if (warehouseId) where.warehouseId = warehouseId
+    const where: any = {
+      product: { companyId: auth.companyId },
+      warehouse: { branch: { companyId: auth.companyId } },
+    }
+
+    if (warehouseId) {
+      where.warehouseId = warehouseId
+    } else if (!auth.isSuperAdmin && auth.authorizedBranchIds.length > 0) {
+      where.warehouse.branchId = { in: auth.authorizedBranchIds }
+    }
+
     if (productId) where.productId = productId
     if (onlyPositive === 'true') where.quantity = { gt: 0 }
 

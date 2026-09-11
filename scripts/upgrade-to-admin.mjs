@@ -1,19 +1,21 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 
-const db = new PrismaClient();
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL });
+const db = new PrismaClient({ adapter });
 
 async function main() {
   try {
     console.log('[v0] Starting admin upgrade process...');
 
-    // Find the omararif user
+    // Find the abdullah user
     const user = await db.user.findUnique({
-      where: { username: 'omararif' },
+      where: { username: 'abdullah' },
       select: { id: true, username: true, nameAr: true },
     });
 
     if (!user) {
-      console.error('[v0] User omararif not found');
+      console.error('[v0] User abdullah not found');
       process.exit(1);
     }
 
@@ -71,7 +73,7 @@ async function main() {
 
     // Verify the change
     const updatedUser = await db.user.findUnique({
-      where: { username: 'omararif' },
+      where: { username: 'abdullah' },
       select: {
         id: true,
         username: true,

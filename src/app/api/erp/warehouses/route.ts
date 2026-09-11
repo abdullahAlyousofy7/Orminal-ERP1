@@ -1,14 +1,25 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const branchId = url.searchParams.get('branchId')
 
-    const where: any = {}
+    const where: any = {
+      branch: { companyId: auth.companyId },
+    }
+
     if (q) {
       where.OR = [
         { code: { contains: q } },
@@ -16,7 +27,16 @@ export async function GET(req: Request) {
         { nameEn: { contains: q } },
       ]
     }
-    if (branchId) where.branchId = branchId
+
+    if (branchId) {
+      if (!auth.authorizedBranchIds.includes(branchId)) {
+        where.branchId = '__UNAUTHORIZED_BRANCH__'
+      } else {
+        where.branchId = branchId
+      }
+    } else if (!auth.isSuperAdmin && auth.authorizedBranchIds.length > 0) {
+      where.branchId = { in: auth.authorizedBranchIds }
+    }
 
     const [data, total] = await Promise.all([
       db.warehouse.findMany({
@@ -36,13 +56,23 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
     if (!body.branchId) return badRequest('branchId is required')
 
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      branchId: body.branchId,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+
     let code = body.code
     if (!code) {
-      const count = await db.warehouse.count()
+      const count = await db.warehouse.count({
+        where: { branch: { companyId: auth.companyId } },
+      })
       code = `WH-${String(count + 1).padStart(3, '0')}`
     }
 

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "Orminal",
+    "stocktake",
+    "TAIZ",
+    "cuid",
+    "UNPOOLED",
+    "SDTA",
+    "ABAC",
+    "zatca",
+    "iban",
+    "avco",
+    "boms",
+    "behaviour",
+    "Payables",
+    "incoterms"
+  ],
+  "ignoreRegExpList": [
+    "/[\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\uFB50-\\uFDFF\\uFE70-\\uFEFF]+/g",
+    "/[\\u0600-\\u06FF]+/g",
+    "\\p{sc=Arabic}+"
+  ]
+}

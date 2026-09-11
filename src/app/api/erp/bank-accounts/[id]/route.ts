@@ -1,22 +1,33 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'bank_accounts', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.bankAccount.findUnique({
-      where: { id },
+    const item = await db.bankAccount.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         account: { select: { id: true, code: true, nameAr: true } },
       },
     })
     if (!item) return notFound('Bank account not found')
 
-    // Build a mini statement from journal lines touching the linked GL account
+    // Build a mini statement from journal lines touching the linked GL account in this tenant
     let transactions: any[] = []
     if (item.accountId) {
       const lines = await db.journalLine.findMany({
-        where: { accountId: item.accountId },
+        where: {
+          accountId: item.accountId,
+          entry: { companyId: auth.companyId },
+        },
         include: {
           entry: {
             select: {
@@ -44,12 +55,26 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'bank_accounts', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const body = await req.json()
-    const exists = await db.bankAccount.findUnique({ where: { id } })
+    const exists = await db.bankAccount.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Bank account not found')
 
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = body
+    const body = await req.json()
+    const { id: _id, companyId: _cId, createdAt: _c, updatedAt: _u, ...rest } = body
+
+    if (rest.accountId || rest.currencyId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, {
+        accountId: rest.accountId,
+        currencyId: rest.currencyId,
+      })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
     const updated = await db.bankAccount.update({
       where: { id },
       data: rest,
@@ -61,10 +86,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'bank_accounts', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.bankAccount.findUnique({ where: { id } })
+    const exists = await db.bankAccount.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Bank account not found')
 
     // Block if balance non-zero

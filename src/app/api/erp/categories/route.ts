@@ -1,9 +1,13 @@
 import { db } from '@/lib/db'
-import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 // GET /api/erp/categories — tree or flat list
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
@@ -47,6 +51,9 @@ export async function GET(req: Request) {
 // POST /api/erp/categories
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
 

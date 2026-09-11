@@ -1,19 +1,27 @@
 import { db } from '@/lib/db'
 import { ok, list, notFound, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  scopedWhere,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
-    const companyId = url.searchParams.get('companyId')
 
-    const where: any = {}
-    if (status) where.status = status
-    if (companyId) where.companyId = companyId
-    if (q) where.period = { contains: q }
+    const baseWhere: any = {}
+    if (status) baseWhere.status = status
+    if (q) baseWhere.period = { contains: q }
+
+    const where = scopedWhere(auth, baseWhere)
 
     const [data, total] = await Promise.all([
       db.payrollRun.findMany({
@@ -38,15 +46,20 @@ export async function POST(req: Request) {
 
     // ============= Calculate payslips from employee contracts =============
     if (action === 'calculate') {
+      const auth = await requireAuthContext(req, { module: 'HR', capability: 'canUpdate' })
+      if (isAuthFailure(auth)) return auth
+
       if (!body.id) return badRequest('معرف تشغيل الرواتب مطلوب')
-      const run = await db.payrollRun.findUnique({ where: { id: body.id } })
+      const run = await db.payrollRun.findFirst({
+        where: { id: body.id, companyId: auth.companyId },
+      })
       if (!run) return notFound('Payroll run not found')
       if (run.status !== 'draft' && run.status !== 'calculated') {
         return badRequest(`لا يمكن الحساب لحالة ${run.status}`)
       }
 
       const employees = await db.employee.findMany({
-        where: { status: 'active', companyId: run.companyId },
+        where: { status: 'active', companyId: auth.companyId },
         include: {
           contracts: { where: { status: 'active' }, orderBy: { startDate: 'desc' }, take: 1 },
         },
@@ -68,7 +81,7 @@ export async function POST(req: Request) {
         const net = gross - deductions
         if (gross <= 0) continue
 
-        const code = await nextNumber('payslip', run.companyId, undefined, year)
+        const code = await nextNumber('payslip', auth.companyId, undefined, year)
         await db.payslip.create({
           data: {
             payrollRunId: run.id,
@@ -99,15 +112,16 @@ export async function POST(req: Request) {
     }
 
     // ============= Default: create new payroll run =============
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     if (!body.period || !body.startDate || !body.endDate) {
       return badRequest('الفترة وتاريخ البداية والنهاية مطلوبة')
     }
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('لا توجد شركة')
 
     const created = await db.payrollRun.create({
       data: {
-        companyId: body.companyId || company.id,
+        companyId: auth.companyId,
         period: body.period,
         startDate: new Date(body.startDate),
         endDate: new Date(body.endDate),

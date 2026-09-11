@@ -3,16 +3,16 @@
 
 import { db } from '@/lib/db'
 import { list, serverError, parsePagination } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canRead')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
     const { id } = await params
     const { page, pageSize, skip } = parsePagination(req)
-    const where = { moduleCode: 'FIN', documentType: 'account', documentId: id }
+    const where = { companyId: auth.companyId, moduleCode: 'FIN', documentType: 'account', documentId: id }
 
     const [rows, total] = await Promise.all([
       db.auditLog.findMany({

@@ -1,12 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/partners/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'partners', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.partner.findUnique({
-      where: { id },
+    const item = await db.partner.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         country: true,
         paymentTerm: true,
@@ -27,12 +35,27 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 // PUT /api/erp/partners/[id]
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'partners', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const body = await req.json()
-    const exists = await db.partner.findUnique({ where: { id } })
+    const exists = await db.partner.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Partner not found')
 
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = body
+    const body = await req.json()
+    const { id: _id, companyId: _cId, createdAt: _c, updatedAt: _u, ...rest } = body
+
+    if (rest.receivableAccountId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { accountId: rest.receivableAccountId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+    if (rest.payableAccountId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { accountId: rest.payableAccountId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
     const updated = await db.partner.update({
       where: { id },
       data: rest,
@@ -44,13 +67,18 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 // DELETE /api/erp/partners/[id] — soft delete
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'partners', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.partner.findUnique({ where: { id } })
+    const exists = await db.partner.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Partner not found')
 
-    const txCount = await db.salesOrder.count({ where: { partnerId: id } })
+    const txCount = await db.salesOrder.count({ where: { partnerId: id, companyId: auth.companyId } })
     if (txCount > 0) {
       const updated = await db.partner.update({ where: { id }, data: { active: false } })
       return ok({ success: true, softDeleted: true, partner: updated })

@@ -56,12 +56,13 @@ import CurrenciesModule from '@/components/modules/currencies-module'
 import OrgStructureModule from '@/components/modules/org-structure-module'
 import GeneralVarsModule from '@/components/modules/general-vars-module'
 import { GeneralDefsModule } from '@/components/modules/general-defs-module'
+import FiscalPeriodsModule from '@/components/modules/fiscal-periods-module'
 
 // Leaves whose data is managed by an existing master-data module
 const LEAF_MODULE_LINKS: Record<string, ModuleKey> = {
   currencies: 'currencies',
   multi_currency: 'currencies',
-  fiscal_periods: 'fiscal-periods',
+  fiscal_periods: 'config-fiscal-periods',
   cost_centers: 'cost-centers',
   analytic_accounts: 'analytic-accounts',
   warehouses_cfg: 'warehouses',
@@ -591,6 +592,10 @@ function LeafContent(props: {
 
   if (leafId === 'general_defs') {
     return <GeneralDefsModule embedded={true} />
+  }
+
+  if (leafId === 'fiscal_periods') {
+    return <FiscalPeriodsModule embedded={true} />
   }
 
   if (!defs.length) {

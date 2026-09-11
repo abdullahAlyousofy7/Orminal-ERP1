@@ -1,17 +1,23 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  scopedWhere,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/fiscal-years
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'fiscal_years', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
-    const url = new URL(req.url)
-    const companyId = url.searchParams.get('companyId')
 
-    const where: any = {}
+    const baseWhere = scopedWhere(auth, {})
+    const where: any = { ...baseWhere }
     if (q) where.name = { contains: q }
-    if (companyId) where.companyId = companyId
 
     const [data, total] = await Promise.all([
       db.fiscalYear.findMany({
@@ -32,20 +38,20 @@ export async function GET(req: Request) {
 // POST /api/erp/fiscal-years — create with optional auto-periods
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'fiscal_years', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.name) return badRequest('name is required')
     if (!body.startDate) return badRequest('startDate is required')
     if (!body.endDate) return badRequest('endDate is required')
-
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
 
     const startDate = new Date(body.startDate)
     const endDate = new Date(body.endDate)
 
     const fy = await db.fiscalYear.create({
       data: {
-        companyId: body.companyId ?? company.id,
+        companyId: auth.companyId,
         name: body.name,
         startDate,
         endDate,
@@ -116,9 +122,9 @@ export async function POST(req: Request) {
       } else if (periodType === 'annual') {
         periods.push({
           fiscalYearId: fy.id,
-          name: `الفترة السنوية — ${fy.name}`,
-          startDate: new Date(start),
-          endDate: new Date(end),
+          name: fy.name,
+          startDate: new Date(startDate),
+          endDate: new Date(endDate),
           quarter: 1,
           state: 'open',
         })
@@ -129,11 +135,12 @@ export async function POST(req: Request) {
       }
     }
 
-    const withPeriods = await db.fiscalYear.findUnique({
+    const result = await db.fiscalYear.findUnique({
       where: { id: fy.id },
       include: { periods: { orderBy: { startDate: 'asc' } } },
     })
-    return created(withPeriods)
+
+    return created(result)
   } catch (e: any) {
     return serverError(e.message)
   }

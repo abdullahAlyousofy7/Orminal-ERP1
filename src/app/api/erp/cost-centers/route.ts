@@ -1,8 +1,12 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'cost_centers', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
 
@@ -42,6 +46,9 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'cost_centers', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
 
@@ -56,7 +63,7 @@ export async function POST(req: Request) {
         code,
         nameAr: body.nameAr,
         nameEn: body.nameEn,
-        parentId: body.parentId,
+        parentId: body.parentId || null,
         active: body.active ?? true,
       },
     })

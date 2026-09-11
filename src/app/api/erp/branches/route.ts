@@ -1,15 +1,20 @@
 import { db } from '@/lib/db'
-import { ok, created, list, badRequest, conflict, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { created, list, badRequest, conflict, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/branches — list branches (multi-tenant scoping)
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
-    const url = new URL(req.url)
-    const companyId = url.searchParams.get('companyId')
 
-    const where: any = {}
+    const where: any = { companyId: auth.companyId }
     if (q) {
       where.OR = [
         { code: { contains: q, mode: 'insensitive' } },
@@ -17,7 +22,10 @@ export async function GET(req: Request) {
         { nameEn: { contains: q, mode: 'insensitive' } },
       ]
     }
-    if (companyId) where.companyId = companyId
+
+    if (!auth.isSuperAdmin && auth.authorizedBranchIds.length > 0) {
+      where.id = { in: auth.authorizedBranchIds }
+    }
 
     const [data, total] = await Promise.all([
       db.branch.findMany({
@@ -48,6 +56,9 @@ export async function GET(req: Request) {
 // POST /api/erp/branches — create a new branch
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     const nameAr = (body.nameAr || body.name || '').trim()
     if (!nameAr) {
@@ -61,37 +72,16 @@ export async function POST(req: Request) {
     const isMain = Boolean(body.isMain)
     const active = body.active !== undefined ? Boolean(body.active) : true
 
-    // Resolve or find companyId
-    let companyId = body.companyId
-    if (!companyId) {
-      const defaultCompany = await db.company.findFirst()
-      if (defaultCompany) {
-        companyId = defaultCompany.id
-      } else {
-        // Create default fallback company if none exists
-        const newCompany = await db.company.create({
-          data: {
-            code: 'COMP-001',
-            nameAr: 'الشركة الرئيسية',
-            nameEn: 'Main Company',
-            currencyId: (await db.currency.findFirst())?.id || 'USD',
-          },
-        })
-        companyId = newCompany.id
-      }
-    }
-
     // Generate or validate unique branch code
     let code = (body.code || '').trim()
     if (!code) {
-      const count = await db.branch.count({ where: { companyId } })
+      const count = await db.branch.count({ where: { companyId: auth.companyId } })
       code = `BR-${String(count + 1).padStart(3, '0')}`
     }
 
     // Check code collision
     const existingCode = await db.branch.findFirst({ where: { code } })
     if (existingCode) {
-      // Append random or timestamp suffix if user provided code or auto count collided
       const totalCount = await db.branch.count()
       code = `BR-${String(totalCount + 1).padStart(3, '0')}-${Math.floor(100 + Math.random() * 900)}`
     }
@@ -99,7 +89,7 @@ export async function POST(req: Request) {
     // If marked as main, reset other main flags under the same company
     if (isMain) {
       await db.branch.updateMany({
-        where: { companyId },
+        where: { companyId: auth.companyId },
         data: { isMain: false },
       })
     }
@@ -109,7 +99,7 @@ export async function POST(req: Request) {
         code,
         nameAr,
         nameEn,
-        companyId,
+        companyId: auth.companyId,
         address,
         phone,
         email,

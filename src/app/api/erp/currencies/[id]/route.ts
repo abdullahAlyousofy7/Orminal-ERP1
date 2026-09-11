@@ -1,11 +1,15 @@
 import { db } from '@/lib/db'
 import { ok, badRequest, notFound, serverError } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'currencies', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const currency = await db.currency.findUnique({
       where: { id },
@@ -39,6 +43,9 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'currencies', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
 
@@ -172,6 +179,9 @@ export async function DELETE(
 ) {
   const isRTL = getIsRTL(req)
   try {
+    const auth = await requireAuthContext(req, { resource: 'currencies', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const currency = await db.currency.findUnique({
       where: { id },

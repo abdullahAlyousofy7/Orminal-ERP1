@@ -38,9 +38,11 @@ export async function verifyPassword(plaintext: string, hash: string): Promise<b
   }
 }
 
+const credentialsProviderFn = ((CredentialsProvider as any)?.default || CredentialsProvider) as typeof CredentialsProvider
+
 export const authOptions: NextAuthOptions = {
   providers: [
-    CredentialsProvider({
+    credentialsProviderFn({
       name: 'credentials',
       credentials: {
         username: { label: 'اسم المستخدم', type: 'text' },
@@ -79,7 +81,7 @@ export const authOptions: NextAuthOptions = {
           const valid = await verifyPassword(credentials.password, user.passwordHash)
           if (!valid) return null
 
-          db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }).catch(() => {})
+          db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }).catch(() => { })
 
           const primaryRole = user.userRoles[0]?.role
 
@@ -126,15 +128,15 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (token && session.user) {
         session.user.id = token.id as string
-        ;(session.user as any).username = token.username
-        ;(session.user as any).nameAr = token.nameAr
-        ;(session.user as any).nameEn = token.nameEn
-        ;(session.user as any).locale = token.locale
-        ;(session.user as any).roleCode = token.roleCode
-        ;(session.user as any).roleNameAr = token.roleNameAr
-        ;(session.user as any).defaultCompanyId = token.defaultCompanyId
-        ;(session.user as any).defaultBranchId = token.defaultBranchId
-        ;(session.user as any).avatar = token.avatar
+          ; (session.user as any).username = token.username
+          ; (session.user as any).nameAr = token.nameAr
+          ; (session.user as any).nameEn = token.nameEn
+          ; (session.user as any).locale = token.locale
+          ; (session.user as any).roleCode = token.roleCode
+          ; (session.user as any).roleNameAr = token.roleNameAr
+          ; (session.user as any).defaultCompanyId = token.defaultCompanyId
+          ; (session.user as any).defaultBranchId = token.defaultBranchId
+          ; (session.user as any).avatar = token.avatar
       }
       return session
     },

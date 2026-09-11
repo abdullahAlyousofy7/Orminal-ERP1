@@ -1,11 +1,17 @@
 import { db } from '@/lib/db'
 import { ok, notFound, serverError } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'employees', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.contract.findUnique({ where: { id } })
+    const exists = await db.contract.findFirst({
+      where: { id, employee: { companyId: auth.companyId } },
+    })
     if (!exists) return notFound('Contract not found')
 
     const data: any = {}
@@ -33,10 +39,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'employees', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.contract.findUnique({ where: { id } })
+    const exists = await db.contract.findFirst({
+      where: { id, employee: { companyId: auth.companyId } },
+    })
     if (!exists) return notFound('Contract not found')
 
     await db.contract.delete({ where: { id } })

@@ -1,14 +1,20 @@
 import { db } from '@/lib/db'
-import { ok, list, badRequest, serverError, parsePagination } from '@/lib/erp/api-response'
+import { ok, created, list, badRequest, serverError, parsePagination } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'employees', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const url = new URL(req.url)
     const employeeId = url.searchParams.get('employeeId')
     const status = url.searchParams.get('status')
 
-    const where: any = {}
+    const where: any = {
+      employee: { companyId: auth.companyId },
+    }
     if (employeeId) where.employeeId = employeeId
     if (status) where.status = status
 
@@ -40,14 +46,19 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'employees', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.employeeId || !body.startDate || body.baseSalary === undefined) {
       return badRequest('الموظف وتاريخ البدء والراتب الأساسي مطلوبة')
     }
 
-    const employeeExists = await db.employee.findUnique({ where: { id: body.employeeId } })
+    const employeeExists = await db.employee.findFirst({
+      where: { id: body.employeeId, companyId: auth.companyId },
+    })
     if (!employeeExists) {
-      return badRequest('الموظف غير موجود')
+      return badRequest('الموظف غير موجود في الشركة المعتمدة')
     }
 
     // If new contract is active, expire all older active contracts for this employee
@@ -58,17 +69,28 @@ export async function POST(req: Request) {
       })
     }
 
-    const created = await db.contract.create({
+    const contract = await db.contract.create({
       data: {
         employeeId: body.employeeId,
         startDate: new Date(body.startDate),
         endDate: body.endDate ? new Date(body.endDate) : null,
         baseSalary: parseFloat(body.baseSalary),
-        allowances: parseFloat(body.allowances || 0),
+        allowances: body.allowances ? parseFloat(body.allowances) : 0,
         status: body.status || 'active',
       },
+      include: {
+        employee: {
+          select: {
+            id: true,
+            employeeNo: true,
+            nameAr: true,
+            department: { select: { nameAr: true } },
+          },
+        },
+      },
     })
-    return ok(created)
+
+    return created(contract)
   } catch (e: any) {
     return serverError(e.message)
   }

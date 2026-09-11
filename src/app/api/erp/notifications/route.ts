@@ -1,19 +1,23 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, badRequest, serverError } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 const ALLOWED_TYPES = ['info', 'success', 'warning', 'error']
 const ALLOWED_CATEGORIES = ['system', 'finance', 'sales', 'purchase', 'inventory', 'hr', 'workflow']
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req)
+    if (isAuthFailure(auth)) return auth
+
     const url = new URL(req.url)
     const type = url.searchParams.get('type') || undefined
     const category = url.searchParams.get('category') || undefined
     const isRead = url.searchParams.get('isRead')
     const q = (url.searchParams.get('q') || url.searchParams.get('search') || '').trim()
 
-    const where: any = {}
+    const where: any = { userId: auth.userId }
     if (type && ALLOWED_TYPES.includes(type)) where.type = type
     if (category && ALLOWED_CATEGORIES.includes(category)) where.category = category
     if (isRead === 'true' || isRead === 'false') where.isRead = isRead === 'true'
@@ -34,9 +38,9 @@ export async function GET(req: Request) {
         },
       }),
       db.notification.count({ where }),
-      db.notification.count({ where: { isRead: false } }),
-      db.notification.groupBy({ by: ['type'], _count: true }),
-      db.notification.groupBy({ by: ['category'], _count: true }),
+      db.notification.count({ where: { ...where, isRead: false } }),
+      db.notification.groupBy({ by: ['type'], where, _count: true }),
+      db.notification.groupBy({ by: ['category'], where, _count: true }),
     ])
 
     const byType = byTypeRaw.reduce((acc: Record<string, number>, r) => {
@@ -65,16 +69,32 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req)
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
-    if (!body.userId) {
-      // Default: assign to first active user (for demo)
-      const user = await db.user.findFirst({ where: { active: true }, orderBy: { createdAt: 'asc' } })
-      if (!user) return badRequest('لا يوجد مستخدم لإرسال الإشعار إليه', 'NO_USER')
-      body.userId = user.id
+    let targetUserId = auth.userId
+
+    if (body.userId && body.userId !== auth.userId) {
+      // If targeting another user, ensure target user belongs to caller's company
+      const targetUser = await db.user.findFirst({
+        where: {
+          id: body.userId,
+          ...(auth.isSuperAdmin ? {} : {
+            OR: [
+              { defaultCompanyId: auth.companyId },
+              { userRoles: { some: { companyId: auth.companyId } } },
+            ],
+          }),
+        },
+      })
+      if (!targetUser) return badRequest('المستخدم المستهدف غير موجود أو غير مصرح به')
+      targetUserId = targetUser.id
     }
+
     const created = await db.notification.create({
       data: {
-        userId: body.userId,
+        userId: targetUserId,
         title: body.title ?? 'إشعار',
         message: body.message ?? '',
         type: ALLOWED_TYPES.includes(body.type) ? body.type : 'info',
@@ -89,14 +109,16 @@ export async function POST(req: Request) {
   }
 }
 
-// Bulk: mark all as read for a given user (or all if no userId)
+// Bulk: mark all as read for current user
 export async function PATCH(req: Request) {
   try {
-    const url = new URL(req.url)
-    const userId = url.searchParams.get('userId')
-    const where: any = { isRead: false }
-    if (userId) where.userId = userId
-    const result = await db.notification.updateMany({ where, data: { isRead: true } })
+    const auth = await requireAuthContext(req)
+    if (isAuthFailure(auth)) return auth
+
+    const result = await db.notification.updateMany({
+      where: { userId: auth.userId, isRead: false },
+      data: { isRead: true },
+    })
     return ok({ updated: result.count })
   } catch (e: any) {
     return serverError(e.message)

@@ -1,20 +1,13 @@
-import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, serverError } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
-// NOTE ON HIERARCHY: every figure below is aggregated from JournalLine, and group
-// accounts never carry journal lines (the posting engine rejects postings to a
-// group). Group accounts therefore contribute exactly 0 here, so introducing the
-// account hierarchy cannot double-count. Group totals are exposed separately in
-// `byGroup` for hierarchical presentation.
-
-// GET /api/erp/financial-statements?type=trial-balance|income|balance-sheet|sales-summary|purchases-summary|inventory-value
+// GET /api/erp/financial-statements?type=trial-balance|income|balance-sheet|sales-summary|purchases-summary|inventory-value|...
 export async function GET(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.LEDGER, 'canRead')
-  if (isAuthFailure(auth)) return auth
-
   try {
+    const auth = await requireAuthContext(req, { resource: 'reports', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const url = new URL(req.url)
     const type = url.searchParams.get('type') || 'trial-balance'
     const from = url.searchParams.get('from')
@@ -27,9 +20,13 @@ export async function GET(req: Request) {
       if (to) dateFilter.postingDate.lte = new Date(to)
     }
 
-    // Only posted entries
+    // Only posted entries strictly scoped to the authenticated tenant
     const entries = await db.journalEntry.findMany({
-      where: { state: 'posted', ...dateFilter },
+      where: {
+        companyId: auth.companyId,
+        state: 'posted',
+        ...dateFilter,
+      },
       include: {
         lines: {
           include: {
@@ -148,35 +145,37 @@ export async function GET(req: Request) {
         .map((a) => ({ code: a.code, nameAr: a.nameAr, amount: a.debit - a.credit }))
       const liabilities = allAccounts.filter((a) => a.type === 'liability')
         .map((a) => ({ code: a.code, nameAr: a.nameAr, amount: a.credit - a.debit }))
-      // Equity + net income
       const equity = allAccounts.filter((a) => a.type === 'equity')
         .map((a) => ({ code: a.code, nameAr: a.nameAr, amount: a.credit - a.debit }))
-      const totalRevenue = allAccounts.filter((a) => a.type === 'income').reduce((s, a) => s + (a.credit - a.debit), 0)
-      const totalExpense = allAccounts.filter((a) => a.type === 'expense').reduce((s, a) => s + (a.debit - a.credit), 0)
-      const netIncome = totalRevenue - totalExpense
-      const totalAssets = assets.reduce((s, a) => s + a.amount, 0)
-      const totalLiabilities = liabilities.reduce((s, a) => s + a.amount, 0)
-      const totalEquity = equity.reduce((s, a) => s + a.amount, 0) + netIncome
+      const totalAssets = assets.reduce((s, r) => s + r.amount, 0)
+      const totalLiabilities = liabilities.reduce((s, r) => s + r.amount, 0)
+      const totalEquity = equity.reduce((s, r) => s + r.amount, 0)
       return ok({
         assets,
         liabilities,
         equity,
-        netIncome,
         totals: {
           assets: totalAssets,
           liabilities: totalLiabilities,
           equity: totalEquity,
+          isBalanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01,
         },
       })
     }
 
     if (type === 'sales-summary') {
       const salesOrders = await db.salesOrder.findMany({
-        where: { ...dateFilter.createdAt ? { createdAt: dateFilter.postingDate } : {} },
+        where: {
+          companyId: auth.companyId,
+          ...(dateFilter.postingDate ? { createdAt: dateFilter.postingDate } : {}),
+        },
         select: { total: true, paid: true, status: true, createdAt: true, partnerId: true },
       })
       const invoices = await db.salesInvoice.findMany({
-        where: { ...dateFilter.postingDate ? { invoiceDate: dateFilter.postingDate } : {} },
+        where: {
+          companyId: auth.companyId,
+          ...(dateFilter.postingDate ? { invoiceDate: dateFilter.postingDate } : {}),
+        },
         select: { total: true, paid: true, status: true },
       })
       const totalSales = salesOrders.reduce((s, o) => s + o.total, 0)
@@ -195,9 +194,17 @@ export async function GET(req: Request) {
 
     if (type === 'purchases-summary') {
       const purchaseOrders = await db.purchaseOrder.findMany({
+        where: {
+          companyId: auth.companyId,
+          ...(dateFilter.postingDate ? { orderDate: dateFilter.postingDate } : {}),
+        },
         select: { total: true, paid: true, status: true },
       })
       const invoices = await db.purchaseInvoice.findMany({
+        where: {
+          companyId: auth.companyId,
+          ...(dateFilter.postingDate ? { billDate: dateFilter.postingDate } : {}),
+        },
         select: { total: true, paid: true, status: true },
       })
       const totalPurchases = purchaseOrders.reduce((s, o) => s + o.total, 0)
@@ -216,6 +223,9 @@ export async function GET(req: Request) {
 
     if (type === 'inventory-value') {
       const quants = await db.stockQuant.findMany({
+        where: {
+          warehouse: { branch: { companyId: auth.companyId } },
+        },
         include: {
           product: { select: { sku: true, nameAr: true, nameEn: true, costPrice: true, salePrice: true, minStock: true, category: { select: { nameAr: true } } } },
           warehouse: { select: { code: true, nameAr: true } },
@@ -239,63 +249,64 @@ export async function GET(req: Request) {
       const rows = entries.map((e) => ({
         number: e.code,
         date: e.postingDate,
-        journalName: e.journalId,
-        ref: e.reference ?? '—',
-        description: e.description ?? '—',
-        state: e.state,
-        totalDebit: e.lines.reduce((s, l) => s + l.debit, 0),
-        totalCredit: e.lines.reduce((s, l) => s + l.credit, 0),
-        linesCount: e.lines.length,
+        description: e.description,
+        total: e.totalDebit,
+        lines: e.lines.map((l) => ({
+          accountCode: l.account?.code,
+          accountName: l.account?.nameAr,
+          debit: l.debit,
+          credit: l.credit,
+          description: l.description,
+        })),
       }))
-      const totalDebit = rows.reduce((s, r) => s + r.totalDebit, 0)
-      const totalCredit = rows.reduce((s, r) => s + r.totalCredit, 0)
-      return ok({ rows, totalDebit, totalCredit, count: rows.length })
+      return ok({ rows, count: rows.length })
     }
 
     if (type === 'account-statement') {
-      const accountId = url.searchParams.get('accountId')
-      const lines = entries.flatMap((e) =>
+      const accountCode = url.searchParams.get('accountCode')
+      const targetLines = entries.flatMap((e) =>
         e.lines
-          .filter((l) => !accountId || l.accountId === accountId || l.account.code === accountId)
+          .filter((l) => !accountCode || l.account?.code === accountCode)
           .map((l) => ({
-            date: e.postingDate,
             entryNumber: e.code,
-            description: l.description || e.description || '—',
-            accountCode: l.account.code,
-            accountName: l.account.nameAr,
+            date: e.postingDate,
+            accountCode: l.account?.code,
+            accountName: l.account?.nameAr,
+            description: l.description || e.description,
+            partner: l.partner?.nameAr,
             debit: l.debit,
             credit: l.credit,
-            partner: l.partner?.nameAr ?? null,
           }))
       )
-      let runningBalance = 0
-      const rows = lines.map((l) => {
-        runningBalance += l.debit - l.credit
-        return { ...l, balance: runningBalance }
+      const totalDebit = targetLines.reduce((s, r) => s + r.debit, 0)
+      const totalCredit = targetLines.reduce((s, r) => s + r.credit, 0)
+      return ok({
+        rows: targetLines,
+        totalDebit,
+        totalCredit,
+        balance: totalDebit - totalCredit,
+        count: targetLines.length,
       })
-      const totalDebit = rows.reduce((s, r) => s + r.debit, 0)
-      const totalCredit = rows.reduce((s, r) => s + r.credit, 0)
-      return ok({ rows, totalDebit, totalCredit, endingBalance: runningBalance })
     }
 
     if (type === 'cash-flow') {
       const cashAccounts = allAccounts.filter((a) => a.accountClass === 'CASH' || a.subtype === 'bank' || a.code.startsWith('1101') || a.code.startsWith('1102'))
-      const rows = cashAccounts.map((a) => ({
-        code: a.code,
-        nameAr: a.nameAr,
-        type: a.type,
-        inflow: a.debit,
-        outflow: a.credit,
-        netChange: a.debit - a.credit,
-      }))
-      const totalInflow = rows.reduce((s, r) => s + r.inflow, 0)
-      const totalOutflow = rows.reduce((s, r) => s + r.outflow, 0)
-      return ok({ rows, totalInflow, totalOutflow, netCashChange: totalInflow - totalOutflow })
+      const inflows = cashAccounts.map((a) => ({ name: a.nameAr, amount: a.debit }))
+      const outflows = cashAccounts.map((a) => ({ name: a.nameAr, amount: a.credit }))
+      const totalInflows = inflows.reduce((s, r) => s + r.amount, 0)
+      const totalOutflows = outflows.reduce((s, r) => s + r.amount, 0)
+      return ok({
+        inflows,
+        outflows,
+        totalInflows,
+        totalOutflows,
+        netCashFlow: totalInflows - totalOutflows,
+      })
     }
 
     if (type === 'cost-center-report') {
       const costCenters = await db.costCenter.findMany({
-        select: { id: true, code: true, nameAr: true, active: true },
+        where: { active: true },
       })
       const ccMap = new Map<string, { code: string; nameAr: string; debit: number; credit: number }>()
       for (const cc of costCenters) {
@@ -316,10 +327,13 @@ export async function GET(req: Request) {
 
     if (type === 'customer-statement' || type === 'ar-aging') {
       const customers = await db.partner.findMany({
-        where: { isCustomer: true },
+        where: { companyId: auth.companyId, isCustomer: true },
         select: {
           id: true, code: true, nameAr: true, phone: true,
-          salesInvoices: { select: { id: true, code: true, total: true, paid: true, dueDate: true, status: true } },
+          salesInvoices: {
+            where: { companyId: auth.companyId },
+            select: { id: true, code: true, total: true, paid: true, dueDate: true, status: true },
+          },
         },
       })
       const rows = customers.map((c) => {
@@ -359,10 +373,13 @@ export async function GET(req: Request) {
 
     if (type === 'supplier-statement' || type === 'ap-aging') {
       const suppliers = await db.partner.findMany({
-        where: { isSupplier: true },
+        where: { companyId: auth.companyId, isSupplier: true },
         select: {
           id: true, code: true, nameAr: true, phone: true,
-          purchaseInvoices: { select: { id: true, code: true, total: true, paid: true, dueDate: true, status: true } },
+          purchaseInvoices: {
+            where: { companyId: auth.companyId },
+            select: { id: true, code: true, total: true, paid: true, dueDate: true, status: true },
+          },
         },
       })
       const rows = suppliers.map((s) => {
@@ -402,7 +419,7 @@ export async function GET(req: Request) {
 
     if (type === 'low-stock') {
       const products = await db.product.findMany({
-        where: { active: true },
+        where: { companyId: auth.companyId, active: true },
         include: {
           category: { select: { nameAr: true } },
           stockQuants: { select: { quantity: true, warehouse: { select: { nameAr: true } } } },
@@ -426,6 +443,7 @@ export async function GET(req: Request) {
 
     if (type === 'payroll-summary') {
       const payrollRuns = await db.payrollRun.findMany({
+        where: { companyId: auth.companyId },
         include: {
           payslips: {
             include: { employee: { select: { employeeNo: true, nameAr: true, department: { select: { nameAr: true } } } } },
@@ -451,6 +469,7 @@ export async function GET(req: Request) {
 
     if (type === 'audit-trail') {
       const logs = await db.auditLog.findMany({
+        where: { companyId: auth.companyId },
         take: 100,
         orderBy: { createdAt: 'desc' },
         include: { user: { select: { username: true } } },
@@ -469,6 +488,7 @@ export async function GET(req: Request) {
 
     if (type === 'receipt-vouchers' || type === 'customer-collections') {
       const payments = await db.salesPayment.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { paymentDate: 'desc' },
         include: { partner: { select: { nameAr: true, code: true } } },
       })
@@ -489,6 +509,7 @@ export async function GET(req: Request) {
 
     if (type === 'payment-vouchers' || type === 'supplier-payments' || type === 'supplier-payments-rep') {
       const payments = await db.purchasePayment.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { paymentDate: 'desc' },
         include: { partner: { select: { nameAr: true, code: true } } },
       })
@@ -509,6 +530,7 @@ export async function GET(req: Request) {
 
     if (type === 'debit-credit-notes' || type === 'sales-credit-notes' || type === 'sales-credit-notes-rep') {
       const notes = await db.salesCreditNote.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { createdAt: 'desc' },
         include: { partner: { select: { nameAr: true, code: true } } },
       })
@@ -529,6 +551,7 @@ export async function GET(req: Request) {
 
     if (type === 'tax-invoices' || type === 'net-sales') {
       const invoices = await db.salesInvoice.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { invoiceDate: 'desc' },
         include: { partner: { select: { nameAr: true, code: true } } },
       })
@@ -552,6 +575,7 @@ export async function GET(req: Request) {
 
     if (type === 'sales-quotations-rep' || type === 'sales-quotations') {
       const items = await db.salesQuotation.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { createdAt: 'desc' },
         include: { partner: { select: { nameAr: true } } },
       })
@@ -568,6 +592,7 @@ export async function GET(req: Request) {
 
     if (type === 'sales-orders-rep' || type === 'sales-orders') {
       const items = await db.salesOrder.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { createdAt: 'desc' },
         include: { partner: { select: { nameAr: true } } },
       })
@@ -584,6 +609,7 @@ export async function GET(req: Request) {
 
     if (type === 'sales-returns-rep' || type === 'sales-returns') {
       const items = await db.salesReturn.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { createdAt: 'desc' },
         include: { partner: { select: { nameAr: true } } },
       })
@@ -601,8 +627,13 @@ export async function GET(req: Request) {
 
     if (type === 'sales-by-customer') {
       const partners = await db.partner.findMany({
-        where: { isCustomer: true },
-        include: { salesInvoices: { select: { total: true, paid: true } } },
+        where: { companyId: auth.companyId, isCustomer: true },
+        include: {
+          salesInvoices: {
+            where: { companyId: auth.companyId },
+            select: { total: true, paid: true },
+          },
+        },
       })
       const rows = partners.map((p) => {
         const invoiced = p.salesInvoices.reduce((s, i) => s + i.total, 0)
@@ -621,8 +652,14 @@ export async function GET(req: Request) {
 
     if (type === 'sales-by-product' || type === 'purchases-by-product') {
       const lines = type === 'sales-by-product'
-        ? await db.salesInvoiceLine.findMany({ include: { product: { select: { sku: true, nameAr: true, costPrice: true } } } })
-        : await db.purchaseInvoiceLine.findMany({ include: { product: { select: { sku: true, nameAr: true, costPrice: true } } } })
+        ? await db.salesInvoiceLine.findMany({
+            where: { invoice: { companyId: auth.companyId } },
+            include: { product: { select: { sku: true, nameAr: true, costPrice: true } } },
+          })
+        : await db.purchaseInvoiceLine.findMany({
+            where: { invoice: { companyId: auth.companyId } },
+            include: { product: { select: { sku: true, nameAr: true, costPrice: true } } },
+          })
 
       const prodMap = new Map<string, { sku: string; name: string; quantity: number; total: number }>()
       for (const l of lines) {
@@ -637,7 +674,10 @@ export async function GET(req: Request) {
     }
 
     if (type === 'purchase-requests-rep' || type === 'purchase-requests') {
-      const items = await db.purchaseRequest.findMany({ orderBy: { createdAt: 'desc' } })
+      const items = await db.purchaseRequest.findMany({
+        where: { companyId: auth.companyId },
+        orderBy: { createdAt: 'desc' },
+      })
       const rows = items.map((pr) => ({
         id: pr.id,
         code: pr.code,
@@ -650,6 +690,7 @@ export async function GET(req: Request) {
 
     if (type === 'purchase-orders-rep' || type === 'purchase-orders') {
       const items = await db.purchaseOrder.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { createdAt: 'desc' },
         include: { partner: { select: { nameAr: true } } },
       })
@@ -666,6 +707,7 @@ export async function GET(req: Request) {
 
     if (type === 'purchase-invoices-rep' || type === 'purchase-invoices' || type === 'net-purchases') {
       const items = await db.purchaseInvoice.findMany({
+        where: { companyId: auth.companyId },
         orderBy: { billDate: 'desc' },
         include: { partner: { select: { nameAr: true } } },
       })
@@ -684,8 +726,13 @@ export async function GET(req: Request) {
 
     if (type === 'purchases-by-supplier') {
       const suppliers = await db.partner.findMany({
-        where: { isSupplier: true },
-        include: { purchaseInvoices: { select: { total: true, paid: true } } },
+        where: { companyId: auth.companyId, isSupplier: true },
+        include: {
+          purchaseInvoices: {
+            where: { companyId: auth.companyId },
+            select: { total: true, paid: true },
+          },
+        },
       })
       const rows = suppliers.map((s) => {
         const invoiced = s.purchaseInvoices.reduce((x, i) => x + i.total, 0)
@@ -704,6 +751,7 @@ export async function GET(req: Request) {
 
     if (type === 'stock-moves-rep' || type === 'stock-moves') {
       const moves = await db.stockMove.findMany({
+        where: { companyId: auth.companyId },
         take: 100,
         orderBy: { postingDate: 'desc' },
         include: {
@@ -728,6 +776,7 @@ export async function GET(req: Request) {
 
     if (type === 'employees-directory') {
       const employees = await db.employee.findMany({
+        where: { companyId: auth.companyId },
         include: { department: { select: { nameAr: true } }, jobPosition: { select: { nameAr: true } } },
       })
       const rows = employees.map((e) => ({
@@ -744,6 +793,7 @@ export async function GET(req: Request) {
 
     if (type === 'attendance-summary') {
       const logs = await db.attendance.findMany({
+        where: { employee: { companyId: auth.companyId } },
         take: 100,
         orderBy: { date: 'desc' },
         include: { employee: { select: { employeeNo: true, nameAr: true } } },
@@ -762,6 +812,7 @@ export async function GET(req: Request) {
 
     if (type === 'leave-summary') {
       const leaves = await db.leaveRequest.findMany({
+        where: { employee: { companyId: auth.companyId } },
         orderBy: { startDate: 'desc' },
         include: { employee: { select: { employeeNo: true, nameAr: true } } },
       })
@@ -783,4 +834,3 @@ export async function GET(req: Request) {
     return serverError(e.message)
   }
 }
-

@@ -1,21 +1,32 @@
 import { db } from '@/lib/db'
-import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { ok, created, list, badRequest, notFound, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
 import { postJournalEntry, purchaseInvoicePosting } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/purchase-invoices
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
     const partnerId = url.searchParams.get('partnerId')
 
-    const where: any = {}
-    if (q) where.OR = [{ code: { contains: q } }, { vendorBillNo: { contains: q } }, { notes: { contains: q } }]
-    if (status) where.status = status
-    if (partnerId) where.partnerId = partnerId
+    const baseWhere: any = {}
+    if (q) baseWhere.OR = [{ code: { contains: q } }, { vendorBillNo: { contains: q } }, { notes: { contains: q } }]
+    if (status) baseWhere.status = status
+    if (partnerId) baseWhere.partnerId = partnerId
+
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
 
     const [data, total] = await Promise.all([
       db.purchaseInvoice.findMany({
@@ -39,15 +50,28 @@ export async function GET(req: Request) {
 // POST — vendor bill. On post: post journal, update partner.currentBalance (increase AP)
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.partnerId) return badRequest('partnerId is required')
     if (!body.lines || body.lines.length === 0) return badRequest('lines are required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    const requestedBranch = body.branchId || auth.branchId
+    if (requestedBranch && !auth.authorizedBranchIds.includes(requestedBranch)) {
+      return badRequest('الفرع المحدد غير مصرح به للمستخدم / Branch not authorized')
+    }
 
-    const code = await nextNumber('purchase_invoice', company.id, branch?.id)
+    const productIds = body.lines.map((l: any) => l.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      partnerId: body.partnerId,
+      branchId: requestedBranch,
+      purchaseOrderId: body.purchaseOrderId,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+
+    const code = await nextNumber('purchase_invoice', auth.companyId, requestedBranch)
 
     let subtotal = 0
     let taxTotal = 0
@@ -76,8 +100,8 @@ export async function POST(req: Request) {
 
     const invoice = await db.purchaseInvoice.create({
       data: {
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: requestedBranch,
         code,
         partnerId: body.partnerId,
         purchaseOrderId: body.purchaseOrderId,
@@ -93,7 +117,7 @@ export async function POST(req: Request) {
         total,
         paid: 0,
         notes: body.notes,
-        createdBy: body.createdBy,
+        createdBy: auth.userId,
         lines: { create: processedLines },
       },
       include: { lines: true, partner: true },
@@ -108,8 +132,8 @@ export async function POST(req: Request) {
 
     if (status === 'posted') {
       const je = await postJournalEntry({
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: requestedBranch || undefined,
         journalType: 'purchase',
         postingDate: body.accountingDate ? new Date(body.accountingDate) : new Date(),
         description: `فاتورة مشتريات ${code}`,
@@ -117,7 +141,7 @@ export async function POST(req: Request) {
         refId: invoice.id,
         currencyId: body.currencyId,
         lines: purchaseInvoicePosting({ total, subtotal, taxTotal, partnerId: body.partnerId }),
-        userId: body.createdBy,
+        userId: auth.userId,
       })
 
       await db.purchaseInvoice.update({
@@ -132,8 +156,8 @@ export async function POST(req: Request) {
       })
     }
 
-    const result = await db.purchaseInvoice.findUnique({
-      where: { id: invoice.id },
+    const result = await db.purchaseInvoice.findFirst({
+      where: { id: invoice.id, companyId: auth.companyId },
       include: { lines: { include: { product: true } }, partner: true },
     })
     return created(result)

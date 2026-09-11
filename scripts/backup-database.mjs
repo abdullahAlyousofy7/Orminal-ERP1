@@ -20,6 +20,7 @@
  */
 
 import { PrismaClient } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -175,8 +176,9 @@ async function main() {
   // create backup directory
   mkdirSync(backupDir, { recursive: true })
 
+  const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL })
   const db = new PrismaClient({
-    datasources: { db: { url: process.env.DATABASE_URL_UNPOOLED } },
+    adapter,
     log: ['error'],
   })
 

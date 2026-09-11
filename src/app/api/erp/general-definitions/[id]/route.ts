@@ -7,9 +7,13 @@
 import { NextResponse } from 'next/server'
 import { ok, badRequest, serverError } from '@/lib/erp/api-response'
 import { updateDefinition, deleteDefinition } from '@/lib/erp/general-definitions-service'
+import { requireAuthContext, isAuthFailure } from '@/lib/erp/rbac'
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
     const updated = await updateDefinition(id, body)
@@ -21,6 +25,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SYS', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const result = await deleteDefinition(id)
     return ok(result)

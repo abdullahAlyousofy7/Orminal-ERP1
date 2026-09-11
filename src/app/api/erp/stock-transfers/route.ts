@@ -1,18 +1,29 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/stock-transfers
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
 
-    const where: any = {}
-    if (q) where.code = { contains: q }
-    if (status) where.status = status
+    const baseWhere: any = {}
+    if (q) baseWhere.code = { contains: q }
+    if (status) baseWhere.status = status
+
+    const where = scopedWhere(auth, baseWhere)
 
     const [data, total] = await Promise.all([
       db.stockTransfer.findMany({
@@ -37,28 +48,36 @@ export async function GET(req: Request) {
 // POST — create. On done: 2 StockMoves, update StockQuants.
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'INV', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.fromWarehouseId) return badRequest('fromWarehouseId is required')
     if (!body.toWarehouseId) return badRequest('toWarehouseId is required')
     if (body.fromWarehouseId === body.toWarehouseId) return badRequest('Source and destination warehouses must differ')
     if (!body.lines || body.lines.length === 0) return badRequest('lines are required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
+    const productIds = body.lines.map((l: any) => l.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      sourceWarehouseId: body.fromWarehouseId,
+      destWarehouseId: body.toWarehouseId,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
 
-    const code = await nextNumber('stock_transfer', company.id)
+    const code = await nextNumber('stock_transfer', auth.companyId)
     const status = body.status ?? 'draft'
 
     const transfer = await db.stockTransfer.create({
       data: {
-        companyId: company.id,
+        companyId: auth.companyId,
         code,
         fromWarehouseId: body.fromWarehouseId,
         toWarehouseId: body.toWarehouseId,
         transferDate: body.transferDate ? new Date(body.transferDate) : new Date(),
         status,
         notes: body.notes,
-        createdBy: body.createdBy,
+        createdBy: auth.userId,
         lines: {
           create: body.lines.map((l: any) => ({
             productId: l.productId,
@@ -78,7 +97,7 @@ export async function POST(req: Request) {
           // Out of source
           await tx.stockMove.create({
             data: {
-              companyId: company.id,
+              companyId: auth.companyId,
               documentType: 'transfer',
               documentId: transfer.id,
               productId: l.productId,
@@ -92,7 +111,7 @@ export async function POST(req: Request) {
           // Into dest
           await tx.stockMove.create({
             data: {
-              companyId: company.id,
+              companyId: auth.companyId,
               documentType: 'transfer',
               documentId: transfer.id,
               productId: l.productId,
@@ -138,8 +157,8 @@ export async function POST(req: Request) {
       })
     }
 
-    const result = await db.stockTransfer.findUnique({
-      where: { id: transfer.id },
+    const result = await db.stockTransfer.findFirst({
+      where: { id: transfer.id, companyId: auth.companyId },
       include: {
         fromWarehouse: true,
         toWarehouse: true,

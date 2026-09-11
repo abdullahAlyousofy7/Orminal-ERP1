@@ -2,10 +2,10 @@
 
 import { db } from '@/lib/db'
 import { list, notFound, serverError, parsePagination } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { isAuthFailure, requireAuthContext } from '@/lib/erp/rbac'
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireCapability(COA_ACTIONS.LEDGER, 'canRead')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
@@ -23,7 +23,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       accountIds = [id, ...descendants.map((d) => d.id)]
     }
 
-    const where = {
+    const where: any = {
+      companyId: auth.companyId,
       lines: { some: { accountId: { in: accountIds } } },
       ...(state ? { state } : {}),
     }

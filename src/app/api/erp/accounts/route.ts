@@ -15,7 +15,7 @@ import {
   parseSearch,
   conflict,
 } from '@/lib/erp/api-response'
-import { COA_ACTIONS, isAuthFailure, requireCapability } from '@/lib/erp/rbac'
+import { COA_ACTIONS, isAuthFailure, requireCapability, requireAuthContext } from '@/lib/erp/rbac'
 import { buildAccountTree, fetchAccountBalances } from '@/lib/erp/account-service'
 import { signedBalance } from '@/lib/erp/account-classes'
 import { createAccount } from '@/lib/erp/account-write'
@@ -54,7 +54,7 @@ export const ACCOUNT_FIELDS = {
 } as const
 
 export async function GET(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canRead')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canRead' })
   if (isAuthFailure(auth)) return auth
 
   try {
@@ -108,7 +108,7 @@ export async function GET(req: Request) {
     if (view === 'tree') {
       const [all, balances] = await Promise.all([
         db.account.findMany({ select: ACCOUNT_FIELDS, orderBy: { code: 'asc' } }),
-        fetchAccountBalances(),
+        fetchAccountBalances(undefined, auth.companyId),
       ])
 
       const hasFilter = Boolean(q || accountClass || type || active || isPosting || isSystem)
@@ -163,7 +163,7 @@ export async function GET(req: Request) {
       db.account.count({ where }),
     ])
 
-    const balances = await fetchAccountBalances(rows.map((r) => r.id))
+    const balances = await fetchAccountBalances(rows.map((r) => r.id), auth.companyId)
 
     // Subtree aggregation for the group accounts on this page.
     const groupPaths = rows.filter((r) => !r.isPosting && r.path).map((r) => r.path as string)
@@ -173,7 +173,7 @@ export async function GET(req: Request) {
         where: { OR: groupPaths.map((p) => ({ path: { startsWith: `${p}/` } })) },
         select: { id: true, path: true },
       })
-      const descBalances = await fetchAccountBalances(descendants.map((d) => d.id))
+      const descBalances = await fetchAccountBalances(descendants.map((d) => d.id), auth.companyId)
       for (const p of groupPaths) {
         let debit = 0
         let credit = 0
@@ -212,7 +212,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const auth = await requireCapability(COA_ACTIONS.ACCOUNTS, 'canCreate')
+  const auth = await requireAuthContext(req, { resource: 'accounts', capability: 'canCreate' })
   if (isAuthFailure(auth)) return auth
 
   try {

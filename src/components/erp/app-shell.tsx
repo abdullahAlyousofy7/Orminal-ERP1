@@ -9,8 +9,15 @@ import { cn } from '@/lib/utils'
 import { useEffect, useState } from 'react'
 
 export function AppShell() {
-  const { activeModule, sidebarCollapsed } = useNav()
+  const { activeModule, setActiveModule, sidebarCollapsed } = useNav()
   const { locale } = useI18n()
+
+  // Migrate legacy 'fiscal-periods' to 'config-fiscal-periods'
+  useEffect(() => {
+    if (activeModule === 'fiscal-periods') {
+      setActiveModule('config-fiscal-periods')
+    }
+  }, [activeModule, setActiveModule])
 
   // Compute year only on client to avoid SSR/CSR timezone mismatch
   const [year, setYear] = useState(2026)

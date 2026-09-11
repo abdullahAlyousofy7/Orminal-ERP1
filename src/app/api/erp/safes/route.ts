@@ -1,14 +1,25 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'safes', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
-    const branchId = url.searchParams.get('branchId')
+    const requestedBranch = url.searchParams.get('branchId')
 
-    const where: any = {}
+    const baseWhere = scopedWhere(auth, { branchId: requestedBranch || undefined })
+    const where: any = { ...baseWhere }
+
     if (q) {
       where.OR = [
         { code: { contains: q } },
@@ -16,7 +27,6 @@ export async function GET(req: Request) {
         { nameEn: { contains: q } },
       ]
     }
-    if (branchId) where.branchId = branchId
 
     const [data, total] = await Promise.all([
       db.safe.findMany({
@@ -36,22 +46,33 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'safes', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
+    if (body.branchId && !auth.authorizedBranchIds.includes(body.branchId)) {
+      return badRequest('Unauthorized branch specified')
+    }
+
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      branchId: body.branchId,
+      accountId: body.accountId,
+      currencyId: body.currencyId,
+    })
+    if (!fkCheck.valid) return fkCheck.error!
 
     let code = body.code
     if (!code) {
-      const count = await db.safe.count()
+      const count = await db.safe.count({ where: { companyId: auth.companyId } })
       code = `SAFE-${String(count + 1).padStart(3, '0')}`
     }
 
     const safe = await db.safe.create({
       data: {
-        companyId: company.id,
-        branchId: body.branchId,
+        companyId: auth.companyId,
+        branchId: body.branchId || null,
         code,
         nameAr: body.nameAr,
         nameEn: body.nameEn,

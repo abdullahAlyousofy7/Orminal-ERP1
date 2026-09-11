@@ -1,8 +1,12 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { requireAuthContext, isAuthFailure, scopedWhere, sanitizeTenantPayload, verifyTenantForeignKeys } from '@/lib/erp/rbac'
 
 // GET /api/erp/products
 export async function GET(req: Request) {
+  const auth = await requireAuthContext(req, { module: 'INV', action: 'PRODUCTS', capability: 'canRead' })
+  if (isAuthFailure(auth)) return auth
+
   try {
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
@@ -11,13 +15,17 @@ export async function GET(req: Request) {
     const type = url.searchParams.get('type')
     const active = url.searchParams.get('active')
 
-    const where: any = {}
+    const where: any = scopedWhere(auth)
     if (q) {
-      where.OR = [
-        { sku: { contains: q } },
-        { barcode: { contains: q } },
-        { nameAr: { contains: q } },
-        { nameEn: { contains: q } },
+      where.AND = [
+        {
+          OR: [
+            { sku: { contains: q } },
+            { barcode: { contains: q } },
+            { nameAr: { contains: q } },
+            { nameEn: { contains: q } },
+          ],
+        },
       ]
     }
     if (categoryId) where.categoryId = categoryId
@@ -71,43 +79,51 @@ export async function GET(req: Request) {
 
 // POST /api/erp/products
 export async function POST(req: Request) {
+  const auth = await requireAuthContext(req, { module: 'INV', action: 'PRODUCTS', capability: 'canCreate' })
+  if (isAuthFailure(auth)) return auth
+
   try {
     const body = await req.json()
     if (!body.nameAr) return badRequest('nameAr is required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
+    // Constraint 4: Verify Cross-Tenant FKs
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      categoryId: body.categoryId,
+    })
+    if (!fkCheck.valid) return fkCheck.error!
 
     let sku = body.sku
     if (!sku) {
-      const count = await db.product.count()
+      const count = await db.product.count({ where: { companyId: auth.companyId } })
       sku = `SKU-${String(count + 1).padStart(5, '0')}`
     }
+
+    const payload = sanitizeTenantPayload(body, auth)
 
     const product = await db.product.create({
       data: {
         sku,
-        barcode: body.barcode,
-        nameAr: body.nameAr,
-        nameEn: body.nameEn,
-        description: body.description,
-        companyId: company.id,
-        categoryId: body.categoryId,
-        uomId: body.uomId,
-        type: body.type ?? 'product',
-        tracking: body.tracking ?? 'none',
-        costPrice: body.costPrice ?? 0,
-        salePrice: body.salePrice ?? 0,
-        costingMethod: body.costingMethod ?? 'fifo',
-        taxCodeId: body.taxCodeId,
-        minStock: body.minStock ?? 0,
-        maxStock: body.maxStock ?? 0,
-        reorderPoint: body.reorderPoint ?? 0,
-        valuationAccountId: body.valuationAccountId,
-        cogsAccountId: body.cogsAccountId,
-        revenueAccountId: body.revenueAccountId,
-        image: body.image,
-        active: body.active ?? true,
+        barcode: payload.barcode,
+        nameAr: payload.nameAr,
+        nameEn: payload.nameEn,
+        description: payload.description,
+        companyId: auth.companyId,
+        categoryId: payload.categoryId,
+        uomId: payload.uomId,
+        type: payload.type ?? 'product',
+        tracking: payload.tracking ?? 'none',
+        costPrice: payload.costPrice ?? 0,
+        salePrice: payload.salePrice ?? 0,
+        costingMethod: payload.costingMethod ?? 'fifo',
+        taxCodeId: payload.taxCodeId,
+        minStock: payload.minStock ?? 0,
+        maxStock: payload.maxStock ?? 0,
+        reorderPoint: payload.reorderPoint ?? 0,
+        valuationAccountId: payload.valuationAccountId,
+        cogsAccountId: payload.cogsAccountId,
+        revenueAccountId: payload.revenueAccountId,
+        image: payload.image,
+        active: payload.active ?? true,
       },
     })
     return created(product)
@@ -115,3 +131,4 @@ export async function POST(req: Request) {
     return serverError(e.message)
   }
 }
+

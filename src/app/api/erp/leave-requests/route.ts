@@ -1,8 +1,16 @@
 import { db } from '@/lib/db'
 import { ok, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
@@ -10,13 +18,18 @@ export async function GET(req: Request) {
     const status = url.searchParams.get('status')
     const leaveType = url.searchParams.get('leaveType')
 
-    const where: any = {}
+    const where: any = {
+      employee: { companyId: auth.companyId },
+    }
     if (employeeId) where.employeeId = employeeId
     if (status) where.status = status
     if (leaveType) where.leaveType = leaveType
     if (q) {
       where.OR = [{ reason: { contains: q } }]
-      where.employee = { OR: [{ nameAr: { contains: q } }, { nameEn: { contains: q } }, { employeeNo: { contains: q } }] }
+      where.employee = {
+        companyId: auth.companyId,
+        OR: [{ nameAr: { contains: q } }, { nameEn: { contains: q } }, { employeeNo: { contains: q } }],
+      }
     }
 
     const [data, total] = await Promise.all([
@@ -37,10 +50,18 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.employeeId || !body.startDate || !body.endDate) {
       return badRequest('الموظف وتاريخ البداية والنهاية مطلوبة')
     }
+
+    // Verify employee belongs to authorized company
+    const fkCheck = await verifyTenantForeignKeys(auth, { employeeId: body.employeeId })
+    if (!fkCheck.valid) return fkCheck.error!
+
     const start = new Date(body.startDate)
     const end = new Date(body.endDate)
     if (end < start) return badRequest('تاريخ النهاية قبل تاريخ البداية')

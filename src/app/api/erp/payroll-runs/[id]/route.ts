@@ -1,12 +1,20 @@
 import { db } from '@/lib/db'
-import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import { ok, notFound, badRequest, forbidden, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, payrollPosting } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  checkCapability,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.payrollRun.findUnique({
-      where: { id },
+    const item = await db.payrollRun.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         payslips: {
           include: {
@@ -30,24 +38,37 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.payrollRun.findUnique({ where: { id } })
+    const exists = await db.payrollRun.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Payroll run not found')
 
     const { action } = body
     if (action) {
       // ============= Post: create journal entry (Dr Salaries Expense / Cr Salaries Payable + Cr Deductions) =============
       if (action === 'post') {
+        const canPost = await checkCapability(auth, 'HR', 'canPost')
+        if (!canPost.allowed) {
+          return forbidden('صلاحية الترحيل غير متوفرة لهذا الحساب', 'INSUFFICIENT_PERMISSION')
+        }
+
         if (exists.status !== 'calculated' && exists.status !== 'reviewed' && exists.status !== 'approved') {
           return badRequest('يجب الحساب أولاً قبل الترحيل')
         }
         if (exists.totalNet <= 0) return badRequest('لا يمكن ترحيل تشغيل بصافي صفري')
 
-        // Use the main branch for the journal sequence (matches existing setup)
-        const branch = await db.branch.findFirst({ where: { companyId: exists.companyId }, orderBy: { isMain: 'desc' } })
+        // Use the main branch for the journal sequence
+        const branch = await db.branch.findFirst({
+          where: { companyId: auth.companyId },
+          orderBy: { isMain: 'desc' },
+        })
         const je = await postJournalEntry({
-          companyId: exists.companyId,
+          companyId: auth.companyId,
           branchId: branch?.id,
           postingDate: new Date(),
           description: `ترحيل رواتب فترة ${exists.period}`,
@@ -83,12 +104,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       }
 
       if (action === 'approve') {
+        const canApprove = await checkCapability(auth, 'HR', 'canApprove')
+        if (!canApprove.allowed) {
+          return forbidden('صلاحية الاعتماد غير متوفرة لهذا الحساب', 'INSUFFICIENT_PERMISSION')
+        }
+
         if (exists.status !== 'reviewed') return badRequest('يجب المراجعة أولاً')
         const updated = await db.payrollRun.update({ where: { id }, data: { status: 'approved' } })
         return ok(updated)
       }
 
       if (action === 'cancel') {
+        const canCancel = await checkCapability(auth, 'HR', 'canCancel')
+        if (!canCancel.allowed) {
+          return forbidden('صلاحية الإلغاء غير متوفرة لهذا الحساب', 'INSUFFICIENT_PERMISSION')
+        }
+
         const updated = await db.payrollRun.update({ where: { id }, data: { status: 'cancelled' } })
         return ok(updated)
       }
@@ -97,7 +128,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     // Plain update
-    const { id: _id, ...rest } = body
+    const { id: _id, companyId: _c, ...rest } = body
     if (rest.startDate) rest.startDate = new Date(rest.startDate)
     if (rest.endDate) rest.endDate = new Date(rest.endDate)
     if (rest.totalGross !== undefined) rest.totalGross = Number(rest.totalGross) || 0
@@ -110,10 +141,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.payrollRun.findUnique({ where: { id } })
+    const exists = await db.payrollRun.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Payroll run not found')
     if (['posted', 'paid'].includes(exists.status)) {
       return badRequest('لا يمكن حذف تشغيل مرحّل أو مدفوع')

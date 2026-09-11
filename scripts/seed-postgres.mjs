@@ -1,8 +1,10 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { scrypt, randomBytes } from 'crypto';
 import { promisify } from 'util';
 
-const db = new PrismaClient();
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL });
+const db = new PrismaClient({ adapter });
 const scryptAsync = promisify(scrypt);
 
 async function hashPassword(password) {
@@ -176,9 +178,9 @@ async function main() {
       where: { username: 'omararif' },
       update: {},
       create: {
-        username: 'omararif',
-        email: 'omararif@example.com',
-        nameAr: 'عمر عريف',
+        username: 'abdullah',
+        email: 'abdullah@example.com',
+        nameAr: ' عبدالله',
         nameEn: 'Omar Arif',
         passwordHash: omarPassword,
         defaultCompanyId: company.id,

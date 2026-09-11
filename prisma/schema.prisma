@@ -22,7 +22,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL_UNPOOLED")
 }
 
 // ============================================================================
@@ -38,7 +37,7 @@ model Company {
   legalName            String?
   companyType          String?   @default("LLC")
   taxNumber            String?
-  crNumber             String?   // Commercial Registration
+  crNumber             String? // Commercial Registration
   vatNumber            String?
   nationalId           String?
   establishedAt        DateTime?
@@ -55,7 +54,7 @@ model Company {
   logoUrl              String?
   logoPrintUrl         String?
   faviconUrl           String?
-  currencyId           String    // base currency
+  currencyId           String // base currency
   decimalPrecision     Int       @default(2)
   taxPolicy            String?   @default("STANDARD")
   timezone             String    @default("Asia/Riyadh")
@@ -76,8 +75,10 @@ model Company {
   users         User[]
   partners      Partner[]
   products      Product[]
-  fiscalYears   FiscalYear[]
-  orgStructures OrgStructure[]
+  fiscalYears      FiscalYear[]
+  orgStructures    OrgStructure[]
+  sequenceDocTypes     SequenceDocType[]
+  transactionSequences TransactionSequence[]
   // transactions scoped by company
   expenses      Expense[]
   revenues      Revenue[]
@@ -116,24 +117,24 @@ model Branch {
 }
 
 model OrgStructure {
-  id                String    @id @default(cuid())
-  code              String    @unique
-  nameAr            String
-  nameEn            String?
-  parentId          String?
-  type              String    @default("إدارة") // قطاع | إدارة عامة | إدارة | قسم | وحدة
-  level             Int       @default(1)
-  path              String?   // materialized path e.g. '/rootId/parentId/thisId'
-  sortOrder         Int       @default(0)
-  companyId         String?
-  branchId          String?
-  costCenterId      String?
-  managerId         String?
-  status            String    @default("active") // draft | active | suspended | archived
-  active            Boolean   @default(true)
-  effectiveFrom     DateTime?
-  effectiveTo       DateTime?
-  notes             String?
+  id            String    @id @default(cuid())
+  code          String    @unique
+  nameAr        String
+  nameEn        String?
+  parentId      String?
+  type          String    @default("إدارة") // قطاع | إدارة عامة | إدارة | قسم | وحدة
+  level         Int       @default(1)
+  path          String? // materialized path e.g. '/rootId/parentId/thisId'
+  sortOrder     Int       @default(0)
+  companyId     String?
+  branchId      String?
+  costCenterId  String?
+  managerId     String?
+  status        String    @default("active") // draft | active | suspended | archived
+  active        Boolean   @default(true)
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  notes         String?
 
   // Enterprise Audit & LifeCycle metadata
   suspendedBy       String?
@@ -369,19 +370,110 @@ model ApprovalStep {
 }
 
 model NumberSequence {
-  id           String  @id @default(cuid())
-  companyId    String
-  branchId     String?
-  documentType String // SO, INV, PO, JE, etc.
-  prefix       String // SO, INV, PO, JE
-  fiscalYear   Int?
-  nextNumber   Int     @default(1)
-  padding      Int     @default(6)
-  resetPolicy  String  @default("yearly") // yearly|monthly|never
-  lastNumber   Int     @default(0)
+  id                    String               @id @default(cuid())
+  companyId             String
+  branchId              String?
+  documentType          String // SO, INV, PO, JE, etc.
+  prefix                String // SO, INV, PO, JE
+  fiscalYear            Int?
+  nextNumber            Int                  @default(1)
+  padding               Int                  @default(6)
+  resetPolicy           String               @default("yearly") // yearly|monthly|never
+  lastNumber            Int                  @default(0)
+  transactionSequenceId String?
+  transactionSequence   TransactionSequence? @relation(fields: [transactionSequenceId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, branchId, documentType, fiscalYear])
   @@index([branchId])
+  @@index([transactionSequenceId])
+}
+
+model SequenceDocType {
+  id                   String                @id @default(cuid())
+  companyId            String
+  code                 String // Business/Display Code (e.g. "1", "2", "35", "58", "3772")
+  docTypeKey           String // Immutable System Identity (e.g. "sales_invoice", "journal_entry")
+  nameAr               String // Arabic display name
+  nameEn               String? // English display name
+  moduleCode           String // System Module (FIN, SAL, PUR, INV, POS, HR, MFG, AST, SYS)
+  mainDocType          String // Functional Domain Category (financial, sales, purchases, inventory, pos, payroll, manufacturing, assets)
+  affectsFinancial     Boolean               @default(false) // Capability Metadata Indicator
+  affectsInventory     Boolean               @default(false) // Capability Metadata Indicator
+  postingProfileCode   String? // Semantic reference to posting profile
+  requiresApproval     Boolean               @default(false) // Workflow capability indicator
+  active               Boolean               @default(true) // Operational Status
+  sortOrder            Int                   @default(0) // Display sort order
+  notes                String? // Administrative notes
+  entryStartDate       DateTime?             @default(now()) // Data entry session start
+  createdById          String? // Entry user ID
+  updatedById          String? // Last modifying user ID
+  createdAt            DateTime              @default(now()) // Creation timestamp
+  updatedAt            DateTime              @updatedAt // Last update timestamp
+
+  company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactionSequences TransactionSequence[]
+
+  @@unique([companyId, code])
+  @@unique([companyId, docTypeKey])
+  @@index([companyId, moduleCode])
+  @@index([companyId, active])
+  @@index([companyId, sortOrder])
+}
+
+model TransactionSequence {
+  id                String            @id @default(cuid())
+  companyId         String
+  sequenceDocTypeId String
+  sequenceNumber    Int               @default(1) // 1, 2, 3... (التسلسل)
+  nameAr            String? // اسم النوع / اسم التسلسل
+  nameEn            String?
+  dateDisplayMode   String            @default("automatic") // "automatic" | "manual" (آلي / يدوي)
+  active            Boolean           @default(true) // فعال (واحد فقط لكل نطاق كامل)
+  initialValue      Int               @default(1) // القيمة الإبتدائية
+  numberLength      Int               @default(6) // طول رقم الوثيقة
+  prefix            String? // بادئة مباشرة
+  suffix            String? // لاحقة اختيارية
+  resetPolicy       String            @default("fiscal_year") // "fiscal_year" | "monthly" | "never"
+  branchScope       String            @default("all") // "all" | "single_branch"
+  branchId          String? // معرف الفرع في حال كان النطاق لفرع محدد
+  fiscalYearScope   Int? // السنة المالية في حال كان التسلسل مقيداً بسنة محددة
+  isLocked          Boolean           @default(false) // يُقفل عند بدء الاستخدام الفعلي
+  version           Int               @default(1)
+  notes             String?
+  entryStartDate    DateTime?         @default(now()) // تاريخ بدء الإدخال
+  createdById       String? // مدخل البيانات
+  updatedById       String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sequenceDocType   SequenceDocType   @relation(fields: [sequenceDocTypeId], references: [id], onDelete: Restrict)
+  segments          SequenceSegment[]
+  sequenceStates    NumberSequence[]
+
+  @@unique([companyId, sequenceDocTypeId, sequenceNumber])
+  @@index([companyId, active])
+  @@index([sequenceDocTypeId])
+  @@index([companyId, branchId])
+  @@index([companyId, fiscalYearScope])
+}
+
+model SequenceSegment {
+  id                    String              @id @default(cuid())
+  transactionSequenceId String
+  segmentNumber         Int // 1, 2, 3... (رقم المقطع)
+  segmentType           String // "prefix" | "fiscal_year" | "calendar_year" | "month" | "day" | "branch" | "sequence_number" | "delimiter"
+  value                 String // القيمة الثابتة أو صيغة المقطع
+  segmentLength         Int? // طول المقطع
+  isResetTrigger        Boolean             @default(false) // يعتمد عليه في إعادة الضبط والتصفير
+  formatType            String? // "standard" | "uppercase" | "padded"
+  dateFormat            String? // "YYYY" | "YY" | "MM" | "DD"
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  transactionSequence   TransactionSequence @relation(fields: [transactionSequenceId], references: [id], onDelete: Cascade)
+
+  @@index([transactionSequenceId, segmentNumber])
 }
 
 model Setting {
@@ -438,15 +530,15 @@ model SettingAuditLog {
 model GeneralDefinition {
   id          String   @id @default(cuid())
   companyId   String   @default("*")
-  typeCode    String   // e.g. EMPLOYEE_GRADE, EMPLOYMENT_TYPE, QUALIFICATION, TERMINATION_REASON, HEALTH_INSURANCE_CATEGORY, HEALTH_INSURANCE_TIER, SPECIALIZATION, EMPLOYEE_CATEGORY, EMPLOYEE_RANK, EMPLOYEE_CLASSIFICATION, EMPLOYEE_GROUP, RESUME_TYPE, ORG_STRUCTURE_TYPE, CONTRACT_TYPE
-  code        String   // Unique code within (companyId, typeCode)
+  typeCode    String // e.g. EMPLOYEE_GRADE, EMPLOYMENT_TYPE, QUALIFICATION, TERMINATION_REASON, HEALTH_INSURANCE_CATEGORY, HEALTH_INSURANCE_TIER, SPECIALIZATION, EMPLOYEE_CATEGORY, EMPLOYEE_RANK, EMPLOYEE_CLASSIFICATION, EMPLOYEE_GROUP, RESUME_TYPE, ORG_STRUCTURE_TYPE, CONTRACT_TYPE
+  code        String // Unique code within (companyId, typeCode)
   nameAr      String
   nameEn      String?
   description String?
   sortOrder   Int      @default(0)
   isSystem    Boolean  @default(false)
   active      Boolean  @default(true)
-  meta        String?  // JSON metadata string
+  meta        String? // JSON metadata string
   createdBy   String?
   updatedBy   String?
   createdAt   DateTime @default(now())
@@ -463,36 +555,36 @@ model GeneralDefinition {
 // =============================================================================
 
 model Currency {
-  id                String   @id @default(cuid())
-  code              String   @unique // SAR, USD, EUR, YER
-  nameAr            String
-  nameEn            String?
-  symbol            String
-  fractionNameAr    String?
-  fractionNameEn    String?
-  decimals          Int      @default(2)
-  exchangeRate      Float    @default(1.0)
-  buyRate           Float?
-  sellRate          Float?
-  minLimit          Float?
-  maxLimit          Float?
-  sortOrder         Int      @default(0)
-  isBase            Boolean  @default(false)
-  isInventory       Boolean  @default(false)
-  status            String   @default("active") // active | suspended | archived
-  active            Boolean  @default(true)
-  suspensionCount   Int      @default(0)
-  suspendedBy       String?
-  suspendedAt       DateTime?
-  notes             String?
-  createdBy         String?
-  updatedBy         String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @default(now()) @updatedAt
+  id              String    @id @default(cuid())
+  code            String    @unique // SAR, USD, EUR, YER
+  nameAr          String
+  nameEn          String?
+  symbol          String
+  fractionNameAr  String?
+  fractionNameEn  String?
+  decimals        Int       @default(2)
+  exchangeRate    Float     @default(1.0)
+  buyRate         Float?
+  sellRate        Float?
+  minLimit        Float?
+  maxLimit        Float?
+  sortOrder       Int       @default(0)
+  isBase          Boolean   @default(false)
+  isInventory     Boolean   @default(false)
+  status          String    @default("active") // active | suspended | archived
+  active          Boolean   @default(true)
+  suspensionCount Int       @default(0)
+  suspendedBy     String?
+  suspendedAt     DateTime?
+  notes           String?
+  createdBy       String?
+  updatedBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
 
   companies         Company[]
   exchangeRates     ExchangeRate[]
-  baseCurrencyRates ExchangeRate[] @relation("BaseCurrency")
+  baseCurrencyRates ExchangeRate[]         @relation("BaseCurrency")
   denominations     CurrencyDenomination[]
   accounts          Account[]
   bankAccounts      BankAccount[]
@@ -2447,28 +2539,5 @@ model PurchaseCreditNoteLine {
 }
 
 // =============================================================================
-// GENERAL DEFINITIONS / LOOKUPS (Book 1 Shared Kernel)
+// GENERAL DEFINITIONS / LOOKUPS (Book 1 Shared Kernel) 2450-2474
 // =============================================================================
-
-model GeneralDefinition {
-  id          String   @id @default(cuid())
-  companyId   String   @default("*")
-  typeCode    String
-  code        String
-  nameAr      String
-  nameEn      String?
-  description String?
-  sortOrder   Int      @default(0)
-  isSystem    Boolean  @default(false)
-  active      Boolean  @default(true)
-  meta        String?
-  createdBy   String?
-  updatedBy   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@unique([companyId, typeCode, code])
-  @@index([companyId, typeCode])
-  @@index([active])
-}
-

@@ -1,19 +1,30 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/sales-returns
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
     const partnerId = url.searchParams.get('partnerId')
 
-    const where: any = {}
-    if (q) where.OR = [{ code: { contains: q } }, { reason: { contains: q } }, { notes: { contains: q } }]
-    if (status) where.status = status
-    if (partnerId) where.partnerId = partnerId
+    const baseWhere: any = {}
+    if (q) baseWhere.OR = [{ code: { contains: q } }, { reason: { contains: q } }, { notes: { contains: q } }]
+    if (status) baseWhere.status = status
+    if (partnerId) baseWhere.partnerId = partnerId
+
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
 
     const [data, total] = await Promise.all([
       db.salesReturn.findMany({
@@ -37,20 +48,38 @@ export async function GET(req: Request) {
 // POST /api/erp/sales-returns — create (draft by default; no posting yet)
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.partnerId) return badRequest('partnerId is required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    const requestedBranch = body.branchId || auth.branchId
+    if (requestedBranch && !auth.authorizedBranchIds.includes(requestedBranch)) {
+      return badRequest('الفرع المحدد غير مصرح به للمستخدم / Branch not authorized')
+    }
 
-    // Generate code SR-YYYY-NNNNN
+    const productIds = (body.lines ?? []).map((l: any) => l.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      partnerId: body.partnerId,
+      branchId: requestedBranch,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+
+    if (body.originalInvoiceId) {
+      const orig = await db.salesInvoice.findFirst({
+        where: { id: body.originalInvoiceId, companyId: auth.companyId },
+      })
+      if (!orig) return badRequest('الفاتورة الأصلية غير موجودة أو تابعة لشركة أخرى / Original invoice not found in tenant')
+    }
+
+    // Generate code SR-YYYY-NNNNN scoped to company
     const year = new Date().getFullYear()
-    const count = await db.salesReturn.count({ where: { companyId: company.id } })
+    const count = await db.salesReturn.count({ where: { companyId: auth.companyId } })
     let seq = count + 1
     let code = `SR-${year}-${String(seq).padStart(5, '0')}`
-    // Ensure uniqueness (handle deletions)
-    while (await db.salesReturn.findUnique({ where: { code } })) {
+    while (await db.salesReturn.findFirst({ where: { code, companyId: auth.companyId } })) {
       seq += 1
       code = `SR-${year}-${String(seq).padStart(5, '0')}`
     }
@@ -79,8 +108,8 @@ export async function POST(req: Request) {
 
     const ret = await db.salesReturn.create({
       data: {
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: requestedBranch,
         code,
         partnerId: body.partnerId,
         originalInvoiceId: body.originalInvoiceId || null,
@@ -91,7 +120,7 @@ export async function POST(req: Request) {
         taxTotal,
         total,
         notes: body.notes,
-        createdBy: body.createdBy,
+        createdBy: auth.userId,
         lines: { create: processedLines },
       },
       include: {

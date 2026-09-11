@@ -1,11 +1,19 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.purchaseOrder.findUnique({
-      where: { id },
+    const item = await db.purchaseOrder.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         partner: true,
         lines: { include: { product: true } },
@@ -20,20 +28,23 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json().catch(() => ({}))
 
-    const exists = await db.purchaseOrder.findUnique({
-      where: { id },
+    const exists = await db.purchaseOrder.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { lines: true },
     })
     if (!exists) return notFound('أمر الشراء غير موجود')
 
-    //// Prevent modifying orders that are already processed or finalized
+    // Prevent modifying orders that are already processed or finalized
     if (exists.status === 'received' || exists.status === 'paid' || exists.status === 'cancelled') {
       if (body.status && Object.keys(body).filter((k) => k !== 'status' && k !== 'action').length === 0) {
         const updatedStatus = await db.purchaseOrder.update({
-          where: { id },
+          where: { id: exists.id },
           data: { status: body.status },
           include: { partner: true, lines: { include: { product: true } } },
         })
@@ -42,7 +53,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       return badRequest('لا يمكن تعديل بنود أو إجماليات أمر شراء مستلم أو مدفوع أو ملغي.')
     }
 
-    const { id: _id, lines, createdAt: _c, updatedAt: _u, orderDate, expectedDate, ...rest } = body
+    if (body.partnerId || body.branchId || body.warehouseId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, {
+        partnerId: body.partnerId,
+        branchId: body.branchId,
+        warehouseId: body.warehouseId,
+      })
+      if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+    }
+
+    const { id: _id, companyId: _c, createdBy: _u, lines, createdAt: _ca, updatedAt: _ua, orderDate, expectedDate, ...rest } = body
 
     const updateData: any = {
       ...rest,
@@ -58,7 +78,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const result = await db.$transaction(async (tx) => {
       if (lines && Array.isArray(lines)) {
         const validLines = lines.filter((l: any) => l.productId && Number(l.quantity) > 0)
-        await tx.purchaseOrderLine.deleteMany({ where: { orderId: id } })
+        const lineProductIds = validLines.map((l: any) => l.productId)
+        const linesFkCheck = await verifyTenantForeignKeys(auth, { productIds: lineProductIds })
+        if (!linesFkCheck.valid && linesFkCheck.error) throw new Error('TENANT_FK_VIOLATION')
+
+        await tx.purchaseOrderLine.deleteMany({ where: { orderId: exists.id } })
 
         let subtotal = 0
         let taxTotal = 0
@@ -101,7 +125,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       }
 
       return tx.purchaseOrder.update({
-        where: { id },
+        where: { id: exists.id },
         data: updateData,
         include: {
           partner: true,
@@ -112,14 +136,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
     return ok(result)
   } catch (e: any) {
+    if (e.message === 'TENANT_FK_VIOLATION') {
+      return badRequest('خطأ في سلامة البيانات: أحد الأصناف ينتمي لشركة أخرى')
+    }
     return serverError(e.message)
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.purchaseOrder.findUnique({ where: { id } })
+    const exists = await db.purchaseOrder.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('أمر الشراء غير موجود')
 
     if (exists.status === 'received' || exists.status === 'paid') {
@@ -127,8 +159,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     }
 
     await db.$transaction(async (tx) => {
-      await tx.purchaseOrderLine.deleteMany({ where: { orderId: id } })
-      await tx.purchaseOrder.delete({ where: { id } })
+      await tx.purchaseOrderLine.deleteMany({ where: { orderId: exists.id } })
+      await tx.purchaseOrder.delete({ where: { id: exists.id } })
     })
 
     return ok({ success: true })
@@ -136,4 +168,3 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     return serverError(e.message)
   }
 }
-

@@ -1,8 +1,10 @@
 import { PrismaClient } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
 import { scrypt, randomBytes } from 'crypto'
 import { promisify } from 'util'
 
-const db = new PrismaClient()
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL })
+const db = new PrismaClient({ adapter })
 const scryptAsync = promisify(scrypt)
 
 async function hashPassword(password) {
@@ -29,14 +31,14 @@ async function main() {
     const existingUser = await db.user.findFirst({
       where: {
         OR: [
-          { username: 'omararif' },
-          { email: 'omararif@example.com' },
+          { username: 'abdullah' },
+          { email: 'abdullah@example.com' },
         ],
       },
     })
 
     if (existingUser) {
-      console.log('User "omararif" already exists!')
+      console.log('User "abdullah" already exists!')
       console.log('Username:', existingUser.username)
       console.log('Email:', existingUser.email)
       process.exit(0)
@@ -45,11 +47,11 @@ async function main() {
     // Create the new user
     const newUser = await db.user.create({
       data: {
-        username: 'omararif',
-        email: 'omararif@example.com',
-        nameAr: 'عمر عريف',
-        nameEn: 'Omar Arif',
-        passwordHash: await hashPassword('Omar775R#'),
+        username: 'abdullah',
+        email: 'abdullah@example.com',
+        nameAr: 'عبدالله ',
+        nameEn: 'Abdullah',
+        passwordHash: await hashPassword('abdullah775R#'),
         defaultCompanyId: company.id,
         defaultBranchId: branch.id,
         locale: 'ar',
@@ -78,7 +80,7 @@ async function main() {
     console.log('─────────────────────────────────')
     console.log('Username:', newUser.username)
     console.log('Email:', newUser.email)
-    console.log('Password: Omar775R#')
+    console.log('Password: abdullah775R#')
     console.log('Name (AR):', newUser.nameAr)
     console.log('Name (EN):', newUser.nameEn)
     console.log('─────────────────────────────────')

@@ -1,17 +1,26 @@
 import { db } from '@/lib/db'
 import { ok, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
-import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const status = new URL(req.url).searchParams.get('status')
-    const where: any = {}
-    if (status) where.status = status
+    const baseWhere: any = {}
+    if (status) baseWhere.status = status
     if (q) {
-      where.OR = [{ employeeNo: { contains: q } }, { nameAr: { contains: q } }, { nameEn: { contains: q } }, { phone: { contains: q } }]
+      baseWhere.OR = [{ employeeNo: { contains: q } }, { nameAr: { contains: q } }, { nameEn: { contains: q } }, { phone: { contains: q } }]
     }
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
     const [data, total] = await Promise.all([
       db.employee.findMany({
         where,
@@ -33,12 +42,20 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.nameAr) return badRequest('الاسم مطلوب')
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company')
-    const count = await db.employee.count()
-    const employeeNo = `EMP-${String(count + 1).padStart(4, '0')}`
+
+    // Branch FK verification if provided
+    if (body.branchId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, { branchId: body.branchId })
+      if (!fkCheck.valid) return fkCheck.error!
+    }
+
+    const count = await db.employee.count({ where: { companyId: auth.companyId } })
+    const employeeNo = body.employeeNo || `EMP-${String(count + 1).padStart(4, '0')}`
 
     // Resolve jobPositionId (free text or CUID)
     let jobPositionId: string | null = null
@@ -77,9 +94,9 @@ export async function POST(req: Request) {
         employeeNo,
         nameAr: body.nameAr,
         nameEn: body.nameEn,
-        companyId: company.id,
-        branchId: body.branchId,
-        departmentId: body.departmentId,
+        companyId: auth.companyId,
+        branchId: body.branchId || auth.branchId || null,
+        departmentId: body.departmentId || null,
         jobPositionId,
         hireDate: body.hireDate ? new Date(body.hireDate) : new Date(),
         status: body.status || 'active',

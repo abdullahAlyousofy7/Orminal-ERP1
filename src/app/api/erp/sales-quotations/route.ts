@@ -1,23 +1,35 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { ok, created, list, badRequest, notFound, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/sales-quotations
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
     const status = url.searchParams.get('status')
     const partnerId = url.searchParams.get('partnerId')
 
-    const where: any = {}
+    const baseWhere: any = {}
     if (q) {
-      where.OR = [{ code: { contains: q } }, { notes: { contains: q } }]
+      baseWhere.OR = [{ code: { contains: q } }, { notes: { contains: q } }]
     }
-    if (status) where.status = status
-    if (partnerId) where.partnerId = partnerId
+    if (status) baseWhere.status = status
+    if (partnerId) baseWhere.partnerId = partnerId
+
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
+    const companyScope = { companyId: auth.companyId }
 
     const [data, total, totalAll, acceptedCount, pendingCount, convertedCount] = await Promise.all([
       db.salesQuotation.findMany({
@@ -31,10 +43,10 @@ export async function GET(req: Request) {
         orderBy: { createdAt: 'desc' },
       }),
       db.salesQuotation.count({ where }),
-      db.salesQuotation.count(),
-      db.salesQuotation.count({ where: { OR: [{ status: 'accepted' }, { status: 'converted' }] } }),
-      db.salesQuotation.count({ where: { OR: [{ status: 'draft' }, { status: 'sent' }] } }),
-      db.salesQuotation.count({ where: { status: 'converted' } }),
+      db.salesQuotation.count({ where: companyScope }),
+      db.salesQuotation.count({ where: { ...companyScope, OR: [{ status: 'accepted' }, { status: 'converted' }] } }),
+      db.salesQuotation.count({ where: { ...companyScope, OR: [{ status: 'draft' }, { status: 'sent' }] } }),
+      db.salesQuotation.count({ where: { ...companyScope, status: 'converted' } }),
     ])
 
     const totalPages = Math.ceil(total / pageSize) || 1
@@ -54,14 +66,26 @@ export async function GET(req: Request) {
 // POST /api/erp/sales-quotations — create (no posting, no stock)
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.partnerId) return badRequest('partnerId is required')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
+    const requestedBranch = body.branchId || auth.branchId
+    if (requestedBranch && !auth.authorizedBranchIds.includes(requestedBranch)) {
+      return badRequest('الفرع المحدد غير مصرح به للمستخدم / Branch not authorized')
+    }
 
-    const code = await nextNumber('sales_quotation', company.id, branch?.id)
+    const productIds = (body.lines ?? []).map((l: any) => l.productId).filter(Boolean)
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      partnerId: body.partnerId,
+      branchId: requestedBranch,
+      productIds,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+
+    const code = await nextNumber('sales_quotation', auth.companyId, requestedBranch)
 
     // Compute totals from lines
     const lines = body.lines ?? []
@@ -90,22 +114,21 @@ export async function POST(req: Request) {
 
     const quotation = await db.salesQuotation.create({
       data: {
-        companyId: company.id,
-        branchId: branch?.id,
+        companyId: auth.companyId,
+        branchId: requestedBranch,
         code,
         partnerId: body.partnerId,
         quotationDate: body.quotationDate ? new Date(body.quotationDate) : new Date(),
         validUntil: body.validUntil ? new Date(body.validUntil) : undefined,
         priceListId: body.priceListId,
         currencyId: body.currencyId,
-        paymentTermId: body.paymentTermId,
         status: body.status ?? 'draft',
         subtotal,
         taxTotal,
         discount: body.discount ?? 0,
         total,
         notes: body.notes,
-        createdBy: body.createdBy,
+        createdBy: auth.userId,
         lines: { create: processedLines },
       },
       include: {

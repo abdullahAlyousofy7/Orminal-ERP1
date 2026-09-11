@@ -1,8 +1,16 @@
 import { db } from '@/lib/db'
 import { ok, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const url = new URL(req.url)
@@ -12,7 +20,9 @@ export async function GET(req: Request) {
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
 
-    const where: any = {}
+    const where: any = {
+      employee: { companyId: auth.companyId },
+    }
     if (employeeId) where.employeeId = employeeId
     if (status) where.status = status
     if (date) {
@@ -27,8 +37,10 @@ export async function GET(req: Request) {
     }
     if (q) {
       where.OR = [{ notes: { contains: q } }]
-      // Also match employee name via employee relation filter
-      where.employee = { OR: [{ nameAr: { contains: q } }, { nameEn: { contains: q } }, { employeeNo: { contains: q } }] }
+      where.employee = {
+        companyId: auth.companyId,
+        OR: [{ nameAr: { contains: q } }, { nameEn: { contains: q } }, { employeeNo: { contains: q } }],
+      }
     }
 
     const [data, total] = await Promise.all([
@@ -49,8 +61,15 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.employeeId || !body.date) return badRequest('الموظف والتاريخ مطلوبان')
+
+    // Verify employee belongs to current authorized company
+    const fkCheck = await verifyTenantForeignKeys(auth, { employeeId: body.employeeId })
+    if (!fkCheck.valid) return fkCheck.error!
 
     const created = await db.attendance.create({
       data: {

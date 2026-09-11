@@ -1,24 +1,35 @@
 import { db } from '@/lib/db'
-import { ok, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
+import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
 import { nextNumber } from '@/lib/erp/number-sequence'
+import {
+  requireAuthContext,
+  scopedWhere,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function GET(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { page, pageSize, skip } = parsePagination(req)
     const q = parseSearch(req)
     const status = new URL(req.url).searchParams.get('status')
     const partnerId = new URL(req.url).searchParams.get('partnerId')
 
-    const where: any = {}
-    if (status) where.status = status
-    if (partnerId) where.partnerId = partnerId
+    const baseWhere: any = {}
+    if (status) baseWhere.status = status
+    if (partnerId) baseWhere.partnerId = partnerId
     if (q) {
-      where.OR = [
+      baseWhere.OR = [
         { code: { contains: q } },
         { reason: { contains: q } },
         { notes: { contains: q } },
       ]
     }
+
+    const where = scopedWhere(auth, baseWhere, { branchScoped: true })
 
     const [data, total] = await Promise.all([
       db.purchaseCreditNote.findMany({
@@ -40,45 +51,48 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     if (!body.partnerId) return badRequest('المورد مطلوب')
 
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company')
+    const requestedBranch = body.branchId || auth.branchId
+    if (requestedBranch && !auth.authorizedBranchIds.includes(requestedBranch)) {
+      return badRequest('الفرع المحدد غير مصرح به للمستخدم / Branch not authorized')
+    }
 
-    const partner = await db.partner.findUnique({ where: { id: body.partnerId } })
-    if (!partner || !partner.isSupplier) return badRequest('المورد غير موجود')
+    const fkCheck = await verifyTenantForeignKeys(auth, {
+      partnerId: body.partnerId,
+      branchId: requestedBranch,
+    })
+    if (!fkCheck.valid && fkCheck.error) return fkCheck.error
 
     const subtotal = Number(body.subtotal) || 0
     const taxTotal = Number(body.taxTotal) || 0
     const total = subtotal + taxTotal
 
-    const code = await nextNumber('purchase_credit_note', company.id)
+    const code = await nextNumber('purchase_credit_note', auth.companyId, requestedBranch)
 
-    const created = await db.purchaseCreditNote.create({
+    const createdRecord = await db.purchaseCreditNote.create({
       data: {
-        companyId: company.id,
+        companyId: auth.companyId,
+        branchId: requestedBranch,
         code,
         partnerId: body.partnerId,
         invoiceId: body.invoiceId || null,
         date: body.date ? new Date(body.date) : new Date(),
-        reason: body.reason || null,
-        status: 'posted',
+        reason: body.reason,
+        status: body.status ?? 'draft',
         subtotal,
         taxTotal,
         total,
-        notes: body.notes || null,
+        notes: body.notes,
       },
       include: { partner: true },
     })
 
-    // Update partner balance (reduce AP)
-    await db.partner.update({
-      where: { id: body.partnerId },
-      data: { currentBalance: { decrement: total } },
-    })
-
-    return ok(created)
+    return created(createdRecord)
   } catch (e: any) {
     return serverError(e.message)
   }

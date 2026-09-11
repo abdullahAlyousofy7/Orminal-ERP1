@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export interface OrgItem {
   id: string
@@ -39,7 +44,7 @@ export interface OrgItem {
   }
 }
 
-// Initial seed data for auto-populating if DB table is empty
+// Initial seed data for auto-populating if DB table is empty for company
 const INITIAL_SEED_DATA = [
   { id: '1', code: '1', nameAr: 'المدير العام', nameEn: 'General Manager', type: 'قطاع', level: 1, notes: 'أعلى مستوى إداري في المنشأة', parentId: null },
   { id: '2', code: '2', nameAr: 'إدارة المالية', nameEn: 'Finance Dept', type: 'إدارة عامة', level: 2, notes: 'تابعة لقطاع المدير العام', parentId: '1' },
@@ -124,8 +129,10 @@ async function updateDescendantsPathAndLevel(parentId: string, parentPath: strin
 }
 
 // Write Audit Log helper
-async function createAuditEntry(data: {
+async function createAuditEntry(entry: {
   action: string
+  companyId?: string
+  userId?: string
   documentId?: string
   oldValue?: any
   newValue?: any
@@ -134,13 +141,15 @@ async function createAuditEntry(data: {
   try {
     await db.auditLog.create({
       data: {
+        companyId: entry.companyId || null,
+        userId: entry.userId || null,
         moduleCode: 'ORG',
         documentType: 'OrgStructure',
-        documentId: data.documentId || null,
-        action: data.action,
-        oldValue: data.oldValue ? JSON.stringify(data.oldValue) : null,
-        newValue: data.newValue ? JSON.stringify(data.newValue) : null,
-        reason: data.reason || null,
+        documentId: entry.documentId || null,
+        action: entry.action,
+        oldValue: entry.oldValue ? JSON.stringify(entry.oldValue) : null,
+        newValue: entry.newValue ? JSON.stringify(entry.newValue) : null,
+        reason: entry.reason || null,
       },
     })
   } catch (err) {
@@ -151,7 +160,13 @@ async function createAuditEntry(data: {
 // GET: Retrieve all Organizational Units
 export async function GET(req: NextRequest) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     let items = await db.orgStructure.findMany({
+      where: {
+        OR: [{ companyId: auth.companyId }, { companyId: null }],
+      },
       orderBy: [{ level: 'asc' }, { code: 'asc' }],
       include: {
         parent: {
@@ -175,7 +190,7 @@ export async function GET(req: NextRequest) {
       },
     })
 
-    // Auto-seed if database table is completely empty
+    // Auto-seed if database table has no rows for this company
     if (!items || items.length === 0) {
       const createdMap = new Map<string, string>()
 
@@ -183,6 +198,7 @@ export async function GET(req: NextRequest) {
         const parentId = seed.parentId ? createdMap.get(seed.parentId) || null : null
         const created = await db.orgStructure.create({
           data: {
+            companyId: auth.companyId,
             code: seed.code,
             nameAr: seed.nameAr,
             nameEn: seed.nameEn,
@@ -192,6 +208,8 @@ export async function GET(req: NextRequest) {
             parentId: parentId,
             status: 'active',
             active: true,
+            createdBy: auth.userId,
+            updatedBy: auth.userId,
           },
         })
         createdMap.set(seed.id, created.id)
@@ -203,6 +221,9 @@ export async function GET(req: NextRequest) {
       }
 
       items = await db.orgStructure.findMany({
+        where: {
+          OR: [{ companyId: auth.companyId }, { companyId: null }],
+        },
         orderBy: [{ level: 'asc' }, { code: 'asc' }],
         include: {
           parent: {
@@ -238,8 +259,11 @@ export async function GET(req: NextRequest) {
 // POST: Create New Organizational Unit
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canCreate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
-    const { code, nameAr, nameEn, parentId, type, notes, companyId, branchId, costCenterId, managerId, status, isSuspended } = body
+    const { code, nameAr, nameEn, parentId, type, notes, branchId, costCenterId, managerId, status, isSuspended } = body
 
     if (!code?.trim() || !nameAr?.trim()) {
       return NextResponse.json({ ok: false, message: 'رقم الهيكل والاسم باللغة العربية حقول مطلوبة' }, { status: 400 })
@@ -260,24 +284,21 @@ export async function POST(req: NextRequest) {
     })
 
     const targetCostCenterId = await sanitizeForeignKey(costCenterId, async (id) => {
-      const c = await db.costCenter.findUnique({ where: { id }, select: { id: true } })
+      const c = await db.costCenter.findFirst({ where: { id, active: true }, select: { id: true } })
       return !!c
     })
 
-    const targetManagerId = await sanitizeForeignKey(managerId, async (id) => {
-      const m = await db.employee.findUnique({ where: { id }, select: { id: true } })
-      return !!m
-    })
+    if (managerId) {
+      const managerCheck = await verifyTenantForeignKeys(auth, { employeeId: managerId })
+      if (!managerCheck.valid) return managerCheck.error!
+    }
+    const targetManagerId = await sanitizeForeignKey(managerId)
 
-    const targetCompanyId = await sanitizeForeignKey(companyId, async (id) => {
-      const comp = await db.company.findUnique({ where: { id }, select: { id: true } })
-      return !!comp
-    })
-
-    const targetBranchId = await sanitizeForeignKey(branchId, async (id) => {
-      const b = await db.branch.findUnique({ where: { id }, select: { id: true } })
-      return !!b
-    })
+    if (branchId) {
+      const branchCheck = await verifyTenantForeignKeys(auth, { branchId })
+      if (!branchCheck.valid) return branchCheck.error!
+    }
+    const targetBranchId = await sanitizeForeignKey(branchId)
 
     let calculatedLevel = 1
     let parentPath = ''
@@ -304,17 +325,17 @@ export async function POST(req: NextRequest) {
         type: type || 'إدارة',
         level: calculatedLevel,
         notes: notes?.trim() || null,
-        companyId: targetCompanyId,
+        companyId: auth.companyId,
         branchId: targetBranchId,
         costCenterId: targetCostCenterId,
         managerId: targetManagerId,
         status: initialStatus,
         active: initialStatus !== 'suspended' && initialStatus !== 'archived',
-        suspendedBy: shouldSuspend ? 'admin' : null,
+        suspendedBy: shouldSuspend ? auth.userId : null,
         suspendedAt: shouldSuspend ? new Date() : null,
         suspensionReason: shouldSuspend ? body.suspensionReason || 'تم إنشاء الهيكل بحالة موقوف' : null,
-        createdBy: 'admin',
-        updatedBy: 'admin',
+        createdBy: auth.userId,
+        updatedBy: auth.userId,
       },
       include: {
         parent: { select: { id: true, code: true, nameAr: true, nameEn: true } },
@@ -341,6 +362,8 @@ export async function POST(req: NextRequest) {
 
     await createAuditEntry({
       action: 'create',
+      companyId: auth.companyId,
+      userId: auth.userId,
       documentId: newItem.id,
       newValue: updatedWithPath,
       reason: 'إنشاء هيكل تنظيمي جديد',
@@ -356,8 +379,11 @@ export async function POST(req: NextRequest) {
 // PUT: Update Existing Organizational Unit & Cascade Path/Level
 export async function PUT(req: NextRequest) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
-    const { id, code, nameAr, nameEn, parentId, type, notes, companyId, branchId, costCenterId, managerId, status, isSuspended, suspensionReason } = body
+    const { id, code, nameAr, nameEn, parentId, type, notes, branchId, costCenterId, managerId, status, isSuspended, suspensionReason } = body
 
     if (!id) {
       return NextResponse.json({ ok: false, message: 'معرف الهيكل التنظيمي مطلوب' }, { status: 400 })
@@ -368,7 +394,11 @@ export async function PUT(req: NextRequest) {
     })
 
     if (!existing) {
-      return NextResponse.json({ ok: false, message: 'الهيكل التنظيمي غير موجود بالنظام' }, { status: 400 })
+      return NextResponse.json({ ok: false, message: 'الهيكل التنظيمي غير موجود بالنظام' }, { status: 404 })
+    }
+
+    if (!auth.isSuperAdmin && existing.companyId && existing.companyId !== auth.companyId) {
+      return NextResponse.json({ ok: false, message: 'الهيكل التنظيمي غير موجود بالنظام' }, { status: 404 })
     }
 
     // Code uniqueness check
@@ -391,30 +421,25 @@ export async function PUT(req: NextRequest) {
 
     const targetCostCenterId = costCenterId !== undefined
       ? await sanitizeForeignKey(costCenterId, async (cid) => {
-          const c = await db.costCenter.findUnique({ where: { id: cid }, select: { id: true } })
+          const c = await db.costCenter.findFirst({ where: { id: cid, active: true }, select: { id: true } })
           return !!c
         })
       : existing.costCenterId
 
+    if (managerId && managerId !== existing.managerId) {
+      const managerCheck = await verifyTenantForeignKeys(auth, { employeeId: managerId })
+      if (!managerCheck.valid) return managerCheck.error!
+    }
     const targetManagerId = managerId !== undefined
-      ? await sanitizeForeignKey(managerId, async (mid) => {
-          const m = await db.employee.findUnique({ where: { id: mid }, select: { id: true } })
-          return !!m
-        })
+      ? await sanitizeForeignKey(managerId)
       : existing.managerId
 
-    const targetCompanyId = companyId !== undefined
-      ? await sanitizeForeignKey(companyId, async (compid) => {
-          const comp = await db.company.findUnique({ where: { id: compid }, select: { id: true } })
-          return !!comp
-        })
-      : existing.companyId
-
+    if (branchId && branchId !== existing.branchId) {
+      const branchCheck = await verifyTenantForeignKeys(auth, { branchId })
+      if (!branchCheck.valid) return branchCheck.error!
+    }
     const targetBranchId = branchId !== undefined
-      ? await sanitizeForeignKey(branchId, async (bid) => {
-          const b = await db.branch.findUnique({ where: { id: bid }, select: { id: true } })
-          return !!b
-        })
+      ? await sanitizeForeignKey(branchId)
       : existing.branchId
 
     // Circular Dependency Protection
@@ -463,18 +488,18 @@ export async function PUT(req: NextRequest) {
         level: calculatedLevel,
         path: newPath,
         notes: notes !== undefined ? notes : existing.notes,
-        companyId: targetCompanyId,
+        companyId: auth.companyId,
         branchId: targetBranchId,
         costCenterId: targetCostCenterId,
         managerId: targetManagerId,
         status: finalStatus,
         active: finalStatus !== 'suspended' && finalStatus !== 'archived',
-        suspendedBy: shouldSuspend ? 'admin' : null,
+        suspendedBy: shouldSuspend ? auth.userId : null,
         suspendedAt: shouldSuspend ? (existing.suspendedAt || new Date()) : null,
         suspensionReason: shouldSuspend ? (suspensionReason || existing.suspensionReason || 'تم إيقاف الهيكل') : null,
         suspensionCount: newSuspensionCount,
         modificationCount: existing.modificationCount + 1,
-        updatedBy: 'admin',
+        updatedBy: auth.userId,
       },
       include: {
         parent: { select: { id: true, code: true, nameAr: true, nameEn: true } },
@@ -490,6 +515,8 @@ export async function PUT(req: NextRequest) {
 
     await createAuditEntry({
       action: 'update',
+      companyId: auth.companyId,
+      userId: auth.userId,
       documentId: id,
       oldValue: existing,
       newValue: updated,
@@ -506,6 +533,9 @@ export async function PUT(req: NextRequest) {
 // PATCH: Quick Status Toggle (Activate / Suspend / Archive)
 export async function PATCH(req: NextRequest) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const body = await req.json()
     const { id, action, isSuspended, suspensionReason } = body
 
@@ -515,6 +545,10 @@ export async function PATCH(req: NextRequest) {
 
     const existing = await db.orgStructure.findUnique({ where: { id } })
     if (!existing) {
+      return NextResponse.json({ ok: false, message: 'الهيكل المطلوب غير موجود' }, { status: 404 })
+    }
+
+    if (!auth.isSuperAdmin && existing.companyId && existing.companyId !== auth.companyId) {
       return NextResponse.json({ ok: false, message: 'الهيكل المطلوب غير موجود' }, { status: 404 })
     }
 
@@ -529,11 +563,12 @@ export async function PATCH(req: NextRequest) {
       updateData = {
         status: 'suspended',
         active: false,
-        suspendedBy: 'admin',
+        suspendedBy: auth.userId,
         suspendedAt: new Date(),
         suspensionReason: suspensionReason || existing.suspensionReason || 'توقف إداري موقت',
         suspensionCount: existing.status !== 'suspended' && !existing.suspendedBy ? existing.suspensionCount + 1 : existing.suspensionCount,
         modificationCount: existing.modificationCount + 1,
+        updatedBy: auth.userId,
       }
     } else if (targetAction === 'activate') {
       updateData = {
@@ -543,12 +578,14 @@ export async function PATCH(req: NextRequest) {
         suspendedAt: null,
         suspensionReason: null,
         modificationCount: existing.modificationCount + 1,
+        updatedBy: auth.userId,
       }
     } else if (targetAction === 'archive') {
       updateData = {
         status: 'archived',
         active: false,
         modificationCount: existing.modificationCount + 1,
+        updatedBy: auth.userId,
       }
     } else {
       return NextResponse.json({ ok: false, message: 'إجراء حالة غير معروف' }, { status: 400 })
@@ -568,6 +605,8 @@ export async function PATCH(req: NextRequest) {
 
     await createAuditEntry({
       action: `status_${targetAction}`,
+      companyId: auth.companyId,
+      userId: auth.userId,
       documentId: id,
       oldValue: existing,
       newValue: updated,
@@ -584,6 +623,9 @@ export async function PATCH(req: NextRequest) {
 // DELETE: Safe Deletion with Referential Protection
 export async function DELETE(req: NextRequest) {
   try {
+    const auth = await requireAuthContext(req, { module: 'HR', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { searchParams } = new URL(req.url)
     let id = searchParams.get('id')
 
@@ -614,6 +656,10 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, message: 'الهيكل المطلوب غير موجود' }, { status: 404 })
     }
 
+    if (!auth.isSuperAdmin && existing.companyId && existing.companyId !== auth.companyId) {
+      return NextResponse.json({ ok: false, message: 'الهيكل المطلوب غير موجود' }, { status: 404 })
+    }
+
     if (existing._count.children > 0) {
       return NextResponse.json(
         { ok: false, message: `لا يمكن حذف الهيكل «${existing.nameAr}» لاحتوائه على (${existing._count.children}) هياكل فرعية تابعة. يرجى إعادة توجيه التفرعات أو تعليق الهيكل.` },
@@ -634,6 +680,8 @@ export async function DELETE(req: NextRequest) {
 
     await createAuditEntry({
       action: 'delete',
+      companyId: auth.companyId,
+      userId: auth.userId,
       documentId: id,
       oldValue: existing,
       reason: 'حذف نهائي آمن للهيكل التنظيمي',

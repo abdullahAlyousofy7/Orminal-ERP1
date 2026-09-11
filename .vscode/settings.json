@@ -1,4 +1,25 @@
 {
+    "cSpell.ignoreRegExpList": [
+        "/[\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\uFB50-\\uFDFF\\uFE70-\\uFEFF]+/g",
+        "/[\\u0600-\\u06FF]+/g",
+        "\\p{sc=Arabic}+"
+    ],
+    "cSpell.words": [
+        "ABAC",
+        "avco",
+        "behaviour",
+        "boms",
+        "cuid",
+        "iban",
+        "incoterms",
+        "Orminal",
+        "Payables",
+        "SDTA",
+        "stocktake",
+        "TAIZ",
+        "UNPOOLED",
+        "zatca"
+    ],
     "sqltools.connections": [
         {
             "pgOptions": {

@@ -1,12 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, paymentPosting } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  verifyTenantForeignKeys,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.purchasePayment.findUnique({
-      where: { id },
+    const item = await db.purchasePayment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { partner: true },
     })
     if (!item) return notFound('Payment not found')
@@ -18,12 +26,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
     const { action, status } = body
 
-    const payment = await db.purchasePayment.findUnique({
-      where: { id },
+    const payment = await db.purchasePayment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { partner: true },
     })
     if (!payment) return notFound('Payment not found')
@@ -34,7 +45,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       if (payment.status !== 'draft') return badRequest('Only draft payments can be posted')
 
       const je = await postJournalEntry({
-        companyId: payment.companyId,
+        companyId: auth.companyId,
         branchId: payment.branchId ?? undefined,
         journalType: 'cash',
         postingDate: payment.paymentDate,
@@ -42,6 +53,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         refType: 'purchase_payment',
         refId: payment.id,
         lines: paymentPosting({ amount: payment.amount, partnerId: payment.partnerId }),
+        userId: auth.userId,
       })
 
       // Update partner balance (decrease AP)
@@ -52,7 +64,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
       // Update invoice if linked
       if (payment.invoiceId) {
-        const invoice = await db.purchaseInvoice.findUnique({ where: { id: payment.invoiceId } })
+        const invoice = await db.purchaseInvoice.findFirst({
+          where: { id: payment.invoiceId, companyId: auth.companyId },
+        })
         if (invoice) {
           const newPaid = invoice.paid + payment.amount
           await db.purchaseInvoice.update({
@@ -66,7 +80,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       }
 
       const updated = await db.purchasePayment.update({
-        where: { id },
+        where: { id: payment.id },
         data: { status: 'posted', journalEntryId: je.id },
         include: { partner: true },
       })
@@ -85,7 +99,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
         // Revert invoice paid amount if linked
         if (payment.invoiceId) {
-          const invoice = await db.purchaseInvoice.findUnique({ where: { id: payment.invoiceId } })
+          const invoice = await db.purchaseInvoice.findFirst({
+            where: { id: payment.invoiceId, companyId: auth.companyId },
+          })
           if (invoice) {
             const newPaid = Math.max(0, invoice.paid - payment.amount)
             await db.purchaseInvoice.update({
@@ -100,7 +116,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       }
 
       const updated = await db.purchasePayment.update({
-        where: { id },
+        where: { id: payment.id },
         data: { status: 'cancelled' },
         include: { partner: true },
       })
@@ -115,34 +131,55 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canUpdate' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json()
-    const exists = await db.purchasePayment.findUnique({ where: { id } })
+    const exists = await db.purchasePayment.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Payment not found')
     if (exists.status !== 'draft') return badRequest('Only draft payments can be edited')
 
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = body
-    const updated = await db.purchasePayment.update({ where: { id }, data: rest })
+    if (body.partnerId || body.branchId || body.bankAccountId || body.safeId) {
+      const fkCheck = await verifyTenantForeignKeys(auth, {
+        partnerId: body.partnerId,
+        branchId: body.branchId,
+        bankAccountId: body.bankAccountId,
+        safeId: body.safeId,
+      })
+      if (!fkCheck.valid && fkCheck.error) return fkCheck.error
+    }
+
+    const { id: _id, companyId: _c, createdBy: _u, createdAt: _ca, updatedAt: _ua, ...rest } = body
+    const updated = await db.purchasePayment.update({
+      where: { id: exists.id },
+      data: rest,
+    })
     return ok(updated)
   } catch (e: any) {
     return serverError(e.message)
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'PUR', capability: 'canDelete' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const exists = await db.purchasePayment.findUnique({ where: { id } })
+    const exists = await db.purchasePayment.findFirst({
+      where: { id, companyId: auth.companyId },
+    })
     if (!exists) return notFound('Payment not found')
     if (exists.status !== 'draft' && exists.status !== 'cancelled') {
       return badRequest('Only draft or cancelled payments can be deleted')
     }
 
-    await db.purchasePayment.delete({ where: { id } })
+    await db.purchasePayment.delete({ where: { id: exists.id } })
     return ok({ success: true })
   } catch (e: any) {
     return serverError(e.message)
   }
 }
-
-

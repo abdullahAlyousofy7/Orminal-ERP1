@@ -1,15 +1,22 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, SYSTEM_ACCOUNTS } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { module: 'SAL', capability: 'canReverse' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
     const body = await req.json().catch(() => ({}))
     const reason = body.reason || 'عكس سند قبض بناءً على طلب محاسبي'
 
-    const payment = await db.salesPayment.findUnique({
-      where: { id },
+    const payment = await db.salesPayment.findFirst({
+      where: { id, companyId: auth.companyId },
       include: { partner: true },
     })
 
@@ -17,10 +24,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (payment.status !== 'posted') {
       return badRequest('Only posted payments can be reversed')
     }
-
-    const company = await db.company.findFirst()
-    if (!company) return badRequest('no company in db')
-    const branch = await db.branch.findFirst({ where: { companyId: company.id } })
 
     // Determine cash/bank account code
     let cashOrBankAccountCode: string = SYSTEM_ACCOUNTS.CASH // '1000'
@@ -31,8 +34,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     // Create automated reversal journal entry
-    // Original receipt entry: Debit Cash/Bank (1000/1020), Credit AR (1100)
-    // Reversal entry: Debit AR (1100), Credit Cash/Bank (1000/1020)
     const reversalLines = [
       {
         accountCode: SYSTEM_ACCOUNTS.AR, // '1100' - AR Customer
@@ -50,15 +51,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     ]
 
     const je = await postJournalEntry({
-      companyId: company.id,
-      branchId: branch?.id,
+      companyId: auth.companyId,
+      branchId: payment.branchId || undefined,
       journalType: 'cash',
       postingDate: new Date(),
       description: `قيد عكسي لسند القبض ${payment.code} — السبب: ${reason}`,
       refType: 'sales_payment_reversal',
       refId: payment.id,
       lines: reversalLines,
-      userId: body.userId,
+      userId: auth.userId,
     })
 
     // Increase customer debt back (increment AR balance)
@@ -69,7 +70,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     // If payment was linked to an invoice, reduce paid amount and adjust invoice status
     if (payment.invoiceId) {
-      const invoice = await db.salesInvoice.findUnique({ where: { id: payment.invoiceId } })
+      const invoice = await db.salesInvoice.findFirst({
+        where: { id: payment.invoiceId, companyId: auth.companyId },
+      })
       if (invoice) {
         const newPaid = Math.max(0, invoice.paid - payment.amount)
         let newStatus = invoice.status
@@ -94,7 +97,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       : `[عكس السند]: ${reason}`
 
     const updatedPayment = await db.salesPayment.update({
-      where: { id },
+      where: { id: payment.id },
       data: {
         status: 'reversed',
         notes: updatedNotes,

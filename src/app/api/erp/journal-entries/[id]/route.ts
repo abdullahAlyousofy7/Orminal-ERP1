@@ -1,13 +1,20 @@
 import { db } from '@/lib/db'
 import { ok, notFound, badRequest, serverError } from '@/lib/erp/api-response'
 import { postJournalEntry, reverseJournalEntry } from '@/lib/erp/accounting-engine'
+import {
+  requireAuthContext,
+  isAuthFailure,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/journal-entries/[id]
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const auth = await requireAuthContext(req, { resource: 'journal_entries', capability: 'canRead' })
+    if (isAuthFailure(auth)) return auth
+
     const { id } = await params
-    const item = await db.journalEntry.findUnique({
-      where: { id },
+    const item = await db.journalEntry.findFirst({
+      where: { id, companyId: auth.companyId },
       include: {
         journal: true,
         lines: {
@@ -22,6 +29,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       },
     })
     if (!item) return notFound('Journal entry not found')
+
+    if (item.branchId && !auth.authorizedBranchIds.includes(item.branchId)) {
+      return notFound('Journal entry not found')
+    }
+
     return ok(item)
   } catch (e: any) {
     return serverError(e.message)
@@ -35,13 +47,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const body = await req.json().catch(() => ({}))
     const action = body.action
 
-    const entry = await db.journalEntry.findUnique({
-      where: { id },
-      include: { lines: true },
-    })
-    if (!entry) return notFound('Journal entry not found')
-
     if (action === 'post') {
+      const auth = await requireAuthContext(req, { resource: 'journal_entries', capability: 'canPost' })
+      if (isAuthFailure(auth)) return auth
+
+      const entry = await db.journalEntry.findFirst({
+        where: { id, companyId: auth.companyId },
+        include: { lines: true },
+      })
+      if (!entry) return notFound('Journal entry not found')
+
+      if (entry.branchId && !auth.authorizedBranchIds.includes(entry.branchId)) {
+        return notFound('Journal entry not found')
+      }
+
       if (entry.state !== 'draft') return badRequest('Only draft entries can be posted')
 
       // Build lines for posting engine
@@ -71,10 +90,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         refId: entry.refId ?? undefined,
         currencyId: entry.currencyId ?? undefined,
         lines,
-        userId: body.userId,
+        userId: auth.userId,
       })
 
-      // Reverse the draft lines (since postJournalEntry creates a new posted entry)
+      // Cancel the draft lines
       await db.journalEntry.update({
         where: { id },
         data: { state: 'cancelled' },
@@ -88,8 +107,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     if (action === 'reverse') {
+      const auth = await requireAuthContext(req, { resource: 'journal_entries', capability: 'canReverse' })
+      if (isAuthFailure(auth)) return auth
+
+      const entry = await db.journalEntry.findFirst({
+        where: { id, companyId: auth.companyId },
+      })
+      if (!entry) return notFound('Journal entry not found')
+
+      if (entry.branchId && !auth.authorizedBranchIds.includes(entry.branchId)) {
+        return notFound('Journal entry not found')
+      }
+
       if (entry.state !== 'posted') return badRequest('Only posted entries can be reversed')
-      const reversal = await reverseJournalEntry(id, body.userId, body.reason)
+
+      const reversal = await reverseJournalEntry(id, auth.userId, body.reason)
       const reversed = await db.journalEntry.findUnique({
         where: { id: reversal.id },
         include: { lines: { include: { account: true } } },
@@ -98,23 +130,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     return badRequest('Unknown action. Use action=post or action=reverse')
-  } catch (e: any) {
-    return serverError(e.message)
-  }
-}
-
-// PUT — only allow editing draft entries
-export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params
-    const body = await req.json()
-    const entry = await db.journalEntry.findUnique({ where: { id } })
-    if (!entry) return notFound('Journal entry not found')
-    if (entry.state !== 'draft') return badRequest('Only draft entries can be edited')
-
-    const { id: _id, lines, createdAt: _c, updatedAt: _u, ...rest } = body
-    const updated = await db.journalEntry.update({ where: { id }, data: rest })
-    return ok(updated)
   } catch (e: any) {
     return serverError(e.message)
   }
