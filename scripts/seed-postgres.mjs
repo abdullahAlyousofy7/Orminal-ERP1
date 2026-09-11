@@ -173,15 +173,15 @@ async function main() {
       }
     });
 
-    const omarPassword = await hashPassword('Omar775R#');
+    const omarPassword = await hashPassword('abdullah775R#');
     const omarUser = await db.user.upsert({
-      where: { username: 'omararif' },
+      where: { username: 'abdullah' },
       update: {},
       create: {
         username: 'abdullah',
         email: 'abdullah@example.com',
         nameAr: ' عبدالله',
-        nameEn: 'Omar Arif',
+        nameEn: 'Abdullah',
         passwordHash: omarPassword,
         defaultCompanyId: company.id,
         defaultBranchId: branch.id,
@@ -226,10 +226,10 @@ async function main() {
     console.log('   ✓ 2 Roles (Admin, Sales Rep)');
     console.log('   ✓ 1 Company');
     console.log('   ✓ 1 Branch');
-    console.log('   ✓ 2 Users (admin, omararif)');
+    console.log('   ✓ 2 Users (admin, abdullah)');
     console.log('\n🔑 Test Credentials:');
     console.log('   Admin: admin / admin123');
-    console.log('   User:  omararif / Omar775R#\n');
+    console.log('   User:  abdullah / abdullah775R#\n');
 
   } catch (err) {
     console.error('❌ Seeding failed:', err);

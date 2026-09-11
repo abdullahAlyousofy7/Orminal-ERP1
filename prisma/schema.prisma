@@ -37,7 +37,7 @@ model Company {
   legalName            String?
   companyType          String?   @default("LLC")
   taxNumber            String?
-  crNumber             String? // Commercial Registration
+  crNumber             String? /// Commercial Registration
   vatNumber            String?
   nationalId           String?
   establishedAt        DateTime?
@@ -70,18 +70,18 @@ model Company {
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  currency      Currency       @relation(fields: [currencyId], references: [id])
-  branches      Branch[]
-  users         User[]
-  partners      Partner[]
-  products      Product[]
-  fiscalYears      FiscalYear[]
-  orgStructures    OrgStructure[]
+  currency             Currency              @relation(fields: [currencyId], references: [id])
+  branches             Branch[]
+  users                User[]
+  partners             Partner[]
+  products             Product[]
+  fiscalYears          FiscalYear[]
+  orgStructures        OrgStructure[]
   sequenceDocTypes     SequenceDocType[]
   transactionSequences TransactionSequence[]
   // transactions scoped by company
-  expenses      Expense[]
-  revenues      Revenue[]
+  expenses             Expense[]
+  revenues             Revenue[]
 
   @@index([currencyId])
 }
@@ -389,26 +389,26 @@ model NumberSequence {
 }
 
 model SequenceDocType {
-  id                   String                @id @default(cuid())
-  companyId            String
-  code                 String // Business/Display Code (e.g. "1", "2", "35", "58", "3772")
-  docTypeKey           String // Immutable System Identity (e.g. "sales_invoice", "journal_entry")
-  nameAr               String // Arabic display name
-  nameEn               String? // English display name
-  moduleCode           String // System Module (FIN, SAL, PUR, INV, POS, HR, MFG, AST, SYS)
-  mainDocType          String // Functional Domain Category (financial, sales, purchases, inventory, pos, payroll, manufacturing, assets)
-  affectsFinancial     Boolean               @default(false) // Capability Metadata Indicator
-  affectsInventory     Boolean               @default(false) // Capability Metadata Indicator
-  postingProfileCode   String? // Semantic reference to posting profile
-  requiresApproval     Boolean               @default(false) // Workflow capability indicator
-  active               Boolean               @default(true) // Operational Status
-  sortOrder            Int                   @default(0) // Display sort order
-  notes                String? // Administrative notes
-  entryStartDate       DateTime?             @default(now()) // Data entry session start
-  createdById          String? // Entry user ID
-  updatedById          String? // Last modifying user ID
-  createdAt            DateTime              @default(now()) // Creation timestamp
-  updatedAt            DateTime              @updatedAt // Last update timestamp
+  id                 String    @id @default(cuid())
+  companyId          String
+  code               String // Business/Display Code (e.g. "1", "2", "35", "58", "3772")
+  docTypeKey         String // Immutable System Identity (e.g. "sales_invoice", "journal_entry")
+  nameAr             String // Arabic display name
+  nameEn             String? // English display name
+  moduleCode         String // System Module (FIN, SAL, PUR, INV, POS, HR, MFG, AST, SYS)
+  mainDocType        String // Functional Domain Category (financial, sales, purchases, inventory, pos, payroll, manufacturing, assets)
+  affectsFinancial   Boolean   @default(false) // Capability Metadata Indicator
+  affectsInventory   Boolean   @default(false) // Capability Metadata Indicator
+  postingProfileCode String? // Semantic reference to posting profile
+  requiresApproval   Boolean   @default(false) // Workflow capability indicator
+  active             Boolean   @default(true) // Operational Status
+  sortOrder          Int       @default(0) // Display sort order
+  notes              String? // Administrative notes
+  entryStartDate     DateTime? @default(now()) // Data entry session start
+  createdById        String? // Entry user ID
+  updatedById        String? // Last modifying user ID
+  createdAt          DateTime  @default(now()) // Creation timestamp
+  updatedAt          DateTime  @updatedAt // Last update timestamp
 
   company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
   transactionSequences TransactionSequence[]
@@ -421,35 +421,35 @@ model SequenceDocType {
 }
 
 model TransactionSequence {
-  id                String            @id @default(cuid())
+  id                String    @id @default(cuid())
   companyId         String
   sequenceDocTypeId String
-  sequenceNumber    Int               @default(1) // 1, 2, 3... (التسلسل)
+  sequenceNumber    Int       @default(1) // 1, 2, 3... (التسلسل)
   nameAr            String? // اسم النوع / اسم التسلسل
   nameEn            String?
-  dateDisplayMode   String            @default("automatic") // "automatic" | "manual" (آلي / يدوي)
-  active            Boolean           @default(true) // فعال (واحد فقط لكل نطاق كامل)
-  initialValue      Int               @default(1) // القيمة الإبتدائية
-  numberLength      Int               @default(6) // طول رقم الوثيقة
+  dateDisplayMode   String    @default("automatic") // "automatic" | "manual" (آلي / يدوي)
+  active            Boolean   @default(true) // فعال (واحد فقط لكل نطاق كامل)
+  initialValue      Int       @default(1) // القيمة الإبتدائية
+  numberLength      Int       @default(6) // طول رقم الوثيقة
   prefix            String? // بادئة مباشرة
   suffix            String? // لاحقة اختيارية
-  resetPolicy       String            @default("fiscal_year") // "fiscal_year" | "monthly" | "never"
-  branchScope       String            @default("all") // "all" | "single_branch"
+  resetPolicy       String    @default("fiscal_year") // "fiscal_year" | "monthly" | "never"
+  branchScope       String    @default("all") // "all" | "single_branch"
   branchId          String? // معرف الفرع في حال كان النطاق لفرع محدد
   fiscalYearScope   Int? // السنة المالية في حال كان التسلسل مقيداً بسنة محددة
-  isLocked          Boolean           @default(false) // يُقفل عند بدء الاستخدام الفعلي
-  version           Int               @default(1)
+  isLocked          Boolean   @default(false) // يُقفل عند بدء الاستخدام الفعلي
+  version           Int       @default(1)
   notes             String?
-  entryStartDate    DateTime?         @default(now()) // تاريخ بدء الإدخال
+  entryStartDate    DateTime? @default(now()) // تاريخ بدء الإدخال
   createdById       String? // مدخل البيانات
   updatedById       String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  sequenceDocType   SequenceDocType   @relation(fields: [sequenceDocTypeId], references: [id], onDelete: Restrict)
-  segments          SequenceSegment[]
-  sequenceStates    NumberSequence[]
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sequenceDocType SequenceDocType   @relation(fields: [sequenceDocTypeId], references: [id], onDelete: Restrict)
+  segments        SequenceSegment[]
+  sequenceStates  NumberSequence[]
 
   @@unique([companyId, sequenceDocTypeId, sequenceNumber])
   @@index([companyId, active])
@@ -459,19 +459,19 @@ model TransactionSequence {
 }
 
 model SequenceSegment {
-  id                    String              @id @default(cuid())
+  id                    String   @id @default(cuid())
   transactionSequenceId String
   segmentNumber         Int // 1, 2, 3... (رقم المقطع)
   segmentType           String // "prefix" | "fiscal_year" | "calendar_year" | "month" | "day" | "branch" | "sequence_number" | "delimiter"
   value                 String // القيمة الثابتة أو صيغة المقطع
   segmentLength         Int? // طول المقطع
-  isResetTrigger        Boolean             @default(false) // يعتمد عليه في إعادة الضبط والتصفير
+  isResetTrigger        Boolean  @default(false) // يعتمد عليه في إعادة الضبط والتصفير
   formatType            String? // "standard" | "uppercase" | "padded"
   dateFormat            String? // "YYYY" | "YY" | "MM" | "DD"
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
-  transactionSequence   TransactionSequence @relation(fields: [transactionSequenceId], references: [id], onDelete: Cascade)
+  transactionSequence TransactionSequence @relation(fields: [transactionSequenceId], references: [id], onDelete: Cascade)
 
   @@index([transactionSequenceId, segmentNumber])
 }
