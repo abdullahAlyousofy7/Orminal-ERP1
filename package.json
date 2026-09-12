@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && node scripts/copy-assets.js",
+    "build": "prisma generate && next build && node scripts/copy-assets.js",
     "start": "next start -p 3000",
+    "postinstall": "prisma generate",
     "lint": "eslint .",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
