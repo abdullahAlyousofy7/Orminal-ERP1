@@ -364,6 +364,19 @@ export async function checkCapability(
   // 4. Fallback to MODULE_ROLE_MATRIX
   const rolePolicies = MODULE_ROLE_MATRIX[roleCodeUpper]
   if (rolePolicies) {
+    // Generic ERP-wide target: cross-cutting read-only endpoints (e.g. the
+    // dashboard) aggregate data across every module rather than belonging to a
+    // single one, so they guard with the bare 'ERP' target. Grant it when the
+    // role holds this capability on ANY module — a VIEWER with per-module
+    // canRead can therefore see the dashboard, while a role with no such grant
+    // anywhere still fails closed.
+    if (moduleOrAction === 'ERP') {
+      const anyModuleGrants = Object.values(rolePolicies).some(
+        (grant) => grant === '*' || (Array.isArray(grant) && grant.includes(capability))
+      )
+      if (anyModuleGrants) return { allowed: true, source: 'default_matrix' }
+    }
+
     const modGrant = rolePolicies[moduleOrAction]
     if (modGrant === '*') return { allowed: true, source: 'default_matrix' }
     if (Array.isArray(modGrant) && modGrant.includes(capability)) {

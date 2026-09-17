@@ -21,7 +21,15 @@ export function RoleBadge() {
   const { t } = useT()
 
   const name = session?.user?.nameAr ?? 'مدير النظام'
-  const roleKey = `role.${session?.user?.roleCode ?? 'admin'}` as any
+  // Role codes in the DB are upper-case (ADMIN, VIEWER, SALES_REP, …) while the
+  // dictionary keys are lower-case (role.admin, role.viewer, …). Lower-case the
+  // code before lookup, and when there is no dictionary entry for the code
+  // (e.g. SALES_REP, FIN_MGR, CEO) fall back to the localized role name carried
+  // on the session so the badge never renders a raw key like "role.ADMIN".
+  const roleCode = session?.user?.roleCode ?? 'viewer'
+  const roleKey = `role.${roleCode.toLowerCase()}`
+  const translated = t(roleKey)
+  const roleLabel = translated === roleKey ? (session?.user?.roleNameAr ?? roleCode) : translated
 
   return ( // role.admin, role.manager, etc.
     <div className="flex items-center gap-2.5 rounded-lg bg-sidebar-accent/60 p-2.5 ring-1 ring-sidebar-border">
@@ -38,7 +46,7 @@ export function RoleBadge() {
           className="mt-0.5 text-[10px] py-0 h-4 gap-0.5 bg-primary/10 text-primary border-primary/20"
         >
           <ShieldCheck className="size-2.5" />
-          {t(roleKey)}
+          {roleLabel}
         </Badge>
       </div>
     </div>
