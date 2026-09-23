@@ -79,6 +79,7 @@ model Company {
   orgStructures        OrgStructure[]
   sequenceDocTypes     SequenceDocType[]
   transactionSequences TransactionSequence[]
+  subledgerDefinitions SubledgerDefinition[]
   // transactions scoped by company
   expenses             Expense[]
   revenues             Revenue[]
@@ -2543,6 +2544,47 @@ model PurchaseCreditNoteLine {
 // GENERAL DEFINITIONS / LOOKUPS (Book 1 Shared Kernel) 2450-2474
 // =============================================================================
 
-// GENERAL DEFINITIONS / LOOKUPS (Book 1 Shared Kernel)
-// Note: GeneralDefinition model is defined once above (Book 3 §3.8 section).
 // =============================================================================
+// SUBLEDGER DEFINITIONS & FIELD LABELS (Dynamic Display Metadata & Settings)
+// =============================================================================
+
+model SubledgerDefinition {
+  id            String    @id @default(cuid())
+  companyId     String
+  numericId     Int       @default(1)
+  subledgerType String    // e.g. "COST_CENTER", "ACTIVITY", "PROJECT", "ANALYTIC_ACCOUNT"
+  nameAr        String
+  nameEn        String?
+  description   String?
+  active        Boolean   @default(true)
+  isSystem      Boolean   @default(true)
+  variables     String?   // JSON string of general variables: { includeParentInCode, maxCodeLength, minCodeLength, postingMethod, numericOnly, usageInTransactions, ... }
+  createdBy     String?
+  updatedBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  company       Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fields        SubledgerFieldLabel[]
+
+  @@unique([companyId, subledgerType])
+  @@index([companyId])
+  @@index([subledgerType])
+}
+
+model SubledgerFieldLabel {
+  id           String    @id @default(cuid())
+  definitionId String
+  fieldKey     String    // Stable technical field key: "entity", "code", "name", "type", "group", "closing", etc.
+  labelAr      String
+  labelEn      String?
+  sortOrder    Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  definition   SubledgerDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+
+  @@unique([definitionId, fieldKey])
+  @@index([definitionId])
+}
+

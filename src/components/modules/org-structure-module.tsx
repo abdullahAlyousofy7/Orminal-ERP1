@@ -43,6 +43,7 @@ import {
   ChevronsDown,
   ChevronsUp,
 } from 'lucide-react'
+import { useSubledgerLabels } from '@/hooks/use-subledger-labels'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -521,6 +522,9 @@ export default function OrgStructureModule({
     },
   })
 
+  const { getSubledgerName } = useSubledgerLabels()
+  const costCenterLabel = getSubledgerName('COST_CENTER', L('مركز التكلفة', 'Cost Center'))
+
   // Fetch Cost Centers for Master Data selector
   const { data: costCenters = [] } = useQuery({
     queryKey: ['cost-centers-lookup'],
@@ -926,7 +930,7 @@ export default function OrgStructureModule({
         .join('')}
           </tbody>
         </table>
-        <div class="footer">${L('تم التصدير تلقائياً بواسطة نظام أورمينال ERP', 'Exported automatically by Orminal ERP')}</div>
+        <div class="footer">${L('تم التصدير بواسطة نظام أورمينال ERP', 'Exported by Orminal ERP')}</div>
       </body>
       </html>
     `
@@ -1188,16 +1192,6 @@ export default function OrgStructureModule({
       {viewMode === 'list' && (
         <Card className="border border-border shadow-sm rounded-b-lg overflow-hidden bg-card">
 
-          {/* DRAG COLUMN GROUPING BANNER (Matching Screenshot) */}
-          <div className="bg-slate-100 dark:bg-slate-900/80 border-b px-4 py-2 text-xs text-muted-foreground flex items-center justify-between">
-            <span className="italic flex items-center gap-1.5 text-slate-600 dark:text-slate-400">
-              {L('اسحب العمود هنا للتجميع الخاص به', 'Drag a column header here to group')}
-            </span>
-            <div className="flex items-center gap-2 text-[11px]">
-              <span className="inline-block size-2 rounded-full bg-emerald-500 animate-pulse" />
-              {L('إجمالي الهياكل المعرفة:', 'Total Defined Structures:')} <strong className="text-foreground">{items.length}</strong>
-            </div>
-          </div>
 
           {/* ACTION TOOLBAR (Exact layout replica of user screenshot) */}
           <div className="p-2 sm:p-3 border-b flex flex-wrap items-center justify-between gap-2 bg-slate-50/60 dark:bg-slate-900/40">
@@ -2459,14 +2453,14 @@ export default function OrgStructureModule({
               {/* مركز التكلفة المرتبط */}
               <div className="space-y-2">
                 <Label htmlFor="costCenterId" className="text-xs font-medium">
-                  {L('مركز التكلفة المرتبط (المحاسبة)', 'Linked Cost Center')}
+                  {L(`${costCenterLabel} المرتبط (المحاسبة)`, `Linked ${costCenterLabel}`)}
                 </Label>
                 <Select
                   value={formData.costCenterId || 'none'}
                   onValueChange={(val) => setFormData((p) => ({ ...p, costCenterId: val === 'none' ? '' : val }))}
                 >
                   <SelectTrigger id="costCenterId" className="h-10 text-sm">
-                    <SelectValue placeholder={L('اختر مركز التكلفة…', 'Select Cost Center…')} />
+                    <SelectValue placeholder={L(`اختر ${costCenterLabel}…`, `Select ${costCenterLabel}…`)} />
                   </SelectTrigger>
                   <SelectContent align={isRTL ? 'start' : 'end'}>
                     <SelectItem value="none">{L('بدون مركز تكلفة', 'No Cost Center')}</SelectItem>

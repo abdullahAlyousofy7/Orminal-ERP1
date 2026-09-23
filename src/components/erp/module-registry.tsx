@@ -136,6 +136,7 @@ const DocumentTemplatesModule = lazy(() => import('@/components/modules/document
 const OrgStructureModule = lazy(() => import('@/components/modules/org-structure-module'))
 const SequenceDocTypesModule = lazy(() => import('@/components/modules/sequence-doc-types-module'))
 const TransactionSequencesModule = lazy(() => import('@/components/modules/transaction-sequences-module').then(m => ({ default: m.TransactionSequencesModule })))
+const SubledgersNamingModule = lazy(() => import('@/components/modules/subledgers-naming-module').then(m => ({ default: m.SubledgersNamingModule })))
 
 export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   // Standalone Org Structure
@@ -348,7 +349,7 @@ export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   'config-currencies': SystemConfigModule,
   'config-fiscal-periods': FiscalPeriodsModule,
   'config-org-structure': OrgStructureModule,
-  'config-subledgers-naming': SystemConfigModule,
+  'config-subledgers-naming': SubledgersNamingModule,
   'config-doc-types': SystemConfigModule,
   'config-doc-sequences': SystemConfigModule,
   'config-languages': SystemConfigModule,

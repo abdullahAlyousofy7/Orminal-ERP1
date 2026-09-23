@@ -16,9 +16,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogB
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { GitBranch, Plus, Pencil, Trash2, Download, CheckCircle, Layers } from 'lucide-react'
+import { useSubledgerLabels } from '@/hooks/use-subledger-labels'
 
 export function CostCentersModule() {
   const { t, isRTL, dir } = useT()
+  const { getSubledgerName, getFieldLabel } = useSubledgerLabels()
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -51,8 +53,12 @@ export function CostCentersModule() {
   const handleEdit = (r: any) => { setForm({ code: r.code, nameAr: r.nameAr, nameEn: r.nameEn || '', parentId: r.parentId || '', active: r.active }); setEditId(r.id); setDialogOpen(true) }
   const handleExport = () => exportToCSV('cost-centers', rows.map((r: any) => ({ code: r.code, nameAr: r.nameAr, nameEn: r.nameEn || '', active: r.active ? 'نشط' : 'غير نشط' })))
 
+  const entityTitle = getSubledgerName('COST_CENTER', isRTL ? 'مراكز التكلفة' : 'Cost Centers')
+  const codeLabel = getFieldLabel('COST_CENTER', 'code', isRTL ? 'الرمز' : 'Code')
+  const nameLabel = getFieldLabel('COST_CENTER', 'name', isRTL ? 'الاسم' : 'Name')
+
   return (
-    <ModuleShell title="مراكز التكلفة" description="إدارة مراكز التكلفة والتقسيمات التحليلية" icon={<GitBranch className="size-5" />} onSearch={setSearch} searchValue={search} onAdd={handleAdd} addLabel="مركز تكلفة" onExport={handleExport}>
+    <ModuleShell title={entityTitle} description={isRTL ? `إدارة ${entityTitle} والتقسيمات التحليلية` : `Manage ${entityTitle} and analytic divisions`} icon={<GitBranch className="size-5" />} onSearch={setSearch} searchValue={search} onAdd={handleAdd} addLabel={entityTitle} onExport={handleExport}>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 mb-2">
         {isLoading ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28" />) : (
           <>
@@ -65,7 +71,7 @@ export function CostCentersModule() {
       </div>
       <div className="rounded-xl border bg-card overflow-hidden">
         <ScrollArea className="max-h-[60vh]"><Table className="table-sticky">
-          <TableHeader><TableRow><TableHead>الرمز</TableHead><TableHead>الاسم (عربي)</TableHead><TableHead>الاسم (إنجليزي)</TableHead><TableHead>الحالة</TableHead><TableHead className="text-end">إجراءات</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>{codeLabel}</TableHead><TableHead>{nameLabel} (عربي)</TableHead><TableHead>{nameLabel} (إنجليزي)</TableHead><TableHead>الحالة</TableHead><TableHead className="text-end">إجراءات</TableHead></TableRow></TableHeader>
           <TableBody>
             {isLoading ? Array.from({ length: 5 }).map((_, i) => <TableRow key={i}>{Array.from({ length: 5 }).map((_, j) => <TableCell key={j}><Skeleton className="h-6" /></TableCell>)}</TableRow>) :
               !rows.length ? <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-12">لا توجد مراكز تكلفة</TableCell></TableRow> :
@@ -93,7 +99,7 @@ export function CostCentersModule() {
               </div>
               <div className="space-y-1 flex-1">
                 <DialogTitle className="text-xl font-bold tracking-tight text-blue-955 dark:text-white">
-                  {editId ? (isRTL ? 'تعديل مركز تكلفة' : 'Edit Cost Center') : (isRTL ? 'مركز تكلفة جديد' : 'New Cost Center')}
+                  {editId ? (isRTL ? `تعديل ${entityTitle}` : `Edit ${entityTitle}`) : (isRTL ? `إضافة ${entityTitle}` : `New ${entityTitle}`)}
                 </DialogTitle>
               </div>
             </div>

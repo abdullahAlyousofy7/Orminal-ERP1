@@ -57,6 +57,7 @@ import OrgStructureModule from '@/components/modules/org-structure-module'
 import GeneralVarsModule from '@/components/modules/general-vars-module'
 import { GeneralDefsModule } from '@/components/modules/general-defs-module'
 import FiscalPeriodsModule from '@/components/modules/fiscal-periods-module'
+import SubledgersNamingModule from '@/components/modules/subledgers-naming-module'
 
 // Leaves whose data is managed by an existing master-data module
 const LEAF_MODULE_LINKS: Record<string, ModuleKey> = {
@@ -134,7 +135,7 @@ const MODULE_TO_CONFIG_LEAF: Record<string, { sectionId: string; leafId: string 
   'config-currencies': { sectionId: 'general', leafId: 'currencies' },
   'config-fiscal-periods': { sectionId: 'general', leafId: 'fiscal_periods' },
   'config-org-structure': { sectionId: 'general', leafId: 'org_structure' },
-  'config-subledgers-naming': { sectionId: 'general', leafId: 'general' },
+  'config-subledgers-naming': { sectionId: 'general', leafId: 'subledgers_naming' },
   'config-doc-types': { sectionId: 'general', leafId: 'document_types' },
   'config-doc-sequences': { sectionId: 'general', leafId: 'numbering' },
   'config-languages': { sectionId: 'general', leafId: 'general' },
@@ -596,6 +597,10 @@ function LeafContent(props: {
 
   if (leafId === 'fiscal_periods') {
     return <FiscalPeriodsModule embedded={true} />
+  }
+
+  if (leafId === 'subledgers_naming') {
+    return <SubledgersNamingModule embedded={true} />
   }
 
   if (!defs.length) {

@@ -838,11 +838,6 @@ export function CurrenciesModule({ embedded = false }: { embedded?: boolean }) {
           </div>
         )}
 
-        {/* Column Grouping Sub-header */}
-        <div className="bg-[#f4f5f8] dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-sm text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center justify-between">
-          <span>{isRTL ? "اسحب العمود هنا لتجميع العمود الخاص به" : "Drag a column header here to group by that column"}</span>
-        </div>
-
         {/* Main Toolbar Bar */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-2 rounded-sm flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">
           {/* Left Side: Columns Selector Dropdown & Search Input */}
@@ -1255,52 +1250,11 @@ export function CurrenciesModule({ embedded = false }: { embedded?: boolean }) {
                   : 'View Currency'}
           </span>
         </div>
-
-        {/* Record Navigation Controls (<< < [ 1 ] > >>) */}
-        {!isAdding && currencies.length > 0 && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 text-white bg-white/10 px-2 py-1 rounded text-xs">
-              <button
-                onClick={() => handleNavigateRecord('first')}
-                className="hover:text-amber-300 p-0.5 transition-colors"
-                title={isRTL ? 'الأول' : 'First'}
-              >
-                <ChevronsRight className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => handleNavigateRecord('prev')}
-                className="hover:text-amber-300 p-0.5 transition-colors"
-                title={isRTL ? 'السابق' : 'Previous'}
-              >
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-              <span className="font-mono px-1">
-                {currentRecordIndex + 1} / {currencies.length}
-              </span>
-              <button
-                onClick={() => handleNavigateRecord('next')}
-                className="hover:text-amber-300 p-0.5 transition-colors"
-                title={isRTL ? 'التالي' : 'Next'}
-              >
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => handleNavigateRecord('last')}
-                className="hover:text-amber-300 p-0.5 transition-colors"
-                title={isRTL ? 'الأخير' : 'Last'}
-              >
-                <ChevronsLeft className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            {isViewOnly ? <Lock className="w-4 h-4 text-amber-300" /> : <Unlock className="w-4 h-4 text-emerald-300" />}
+        {/* Sub-Header Dropdown Menus */}
+        <div className="bg-[#f4f5f8] dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-sm flex items-center justify-between text-xs text-slate-700 dark:text-slate-300">
+          <div className="text-slate-500 dark:text-slate-400 font-mono text-[11px]">
+            {formData.code ? (isRTL ? `كود العملة: ${formData.code}` : `Currency Code: ${formData.code}`) : ''}
           </div>
-        )}
-      </div>
-
-      {/* Sub-Header Dropdown Menus */}
-      <div className="bg-[#f4f5f8] dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-sm flex items-center justify-between text-xs text-slate-700 dark:text-slate-300">
-        <div className="text-slate-500 dark:text-slate-400 font-mono text-[11px]">
-          {formData.code ? (isRTL ? `كود العملة: ${formData.code}` : `Currency Code: ${formData.code}`) : ''}
         </div>
       </div>
 

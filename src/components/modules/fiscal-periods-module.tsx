@@ -1,34 +1,140 @@
 'use client'
 
-import { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ModuleShell } from '@/components/erp/module-shell'
 import { KpiCard } from '@/components/erp/kpi-card'
-import { StatusBadge } from '@/components/erp/status-badge'
 import { useT } from '@/lib/i18n/use-t'
 import { exportToCSV } from '@/lib/export'
 import { toast } from 'sonner'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogBody, DialogDescription } from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogBody,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Card } from '@/components/ui/card'
-import { CalendarClock, Plus, Download, Lock, Unlock, AlertCircle, Pencil, Search, ShieldAlert } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import {
+  CalendarClock,
+  Plus,
+  Lock,
+  Unlock,
+  AlertCircle,
+  Pencil,
+  Search,
+  ShieldAlert,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  RotateCw,
+  Edit2,
+  Columns,
+} from 'lucide-react'
 
 export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean } = {}) {
-  const { t, isRTL, dir: rawDir } = useT()
+  const { isRTL, dir: rawDir } = useT()
   const dir = rawDir as 'ltr' | 'rtl'
   const qc = useQueryClient()
+
+  // Filters & Search
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [yearFilter, setYearFilter] = useState('all')
 
+  // Pagination & Row selection (matching org-structure-module.tsx)
+  const [pageSize, setPageSize] = useState(10)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Column visibility controls
+  const DEFAULT_VISIBLE_COLS = useMemo(
+    () => ({
+      fiscalYear: true,
+      name: true,
+      startDate: true,
+      endDate: true,
+      quarter: true,
+      state: true,
+      actions: true,
+    }),
+    []
+  )
+  const [visibleCols, setVisibleCols] = useState(DEFAULT_VISIBLE_COLS)
+
+  // Column resizing controls
+  const DEFAULT_COL_WIDTHS = useMemo<Record<string, number>>(
+    () => ({
+      fiscalYear: 140,
+      name: 180,
+      startDate: 125,
+      endDate: 125,
+      quarter: 90,
+      state: 110,
+      actions: 160,
+    }),
+    []
+  )
+  const [colWidths, setColWidths] = useState<Record<string, number>>(DEFAULT_COL_WIDTHS)
+
+  const handleResizeStart = (colKey: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startWidth = colWidths[colKey] || DEFAULT_COL_WIDTHS[colKey] || 120
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = isRTL ? startX - moveEvent.clientX : moveEvent.clientX - startX
+      const newWidth = Math.max(60, startWidth + deltaX)
+      setColWidths((prev) => ({ ...prev, [colKey]: newWidth }))
+    }
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // Dialog States
   const [yearDialogOpen, setYearDialogOpen] = useState(false)
   const [yearForm, setYearForm] = useState<any>({
     name: '',
@@ -90,6 +196,19 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
     return matchesSearch && matchesStatus && matchesYear
   })
 
+  // Pagination calculation
+  const totalPages = Math.ceil(filteredPeriods.length / pageSize) || 1
+  const paginatedPeriods = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filteredPeriods.slice(start, start + pageSize)
+  }, [filteredPeriods, currentPage, pageSize])
+
+  // Selected period derivation
+  const selectedPeriod = useMemo(
+    () => periods.find((p: any) => p.id === selectedId) || null,
+    [periods, selectedId]
+  )
+
   const createYearMut = useMutation({
     mutationFn: async () => {
       const r = await fetch('/api/erp/fiscal-years', {
@@ -104,7 +223,12 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
         }),
       })
       if (r.status === 403) {
-        throw new Error(txt('صلاحية غير كافية: لا تملك صلاحية إنشاء سنة مالية لهذه المؤسسة', 'Insufficient permission: you cannot create a fiscal year for this company'))
+        throw new Error(
+          txt(
+            'صلاحية غير كافية: لا تملك صلاحية إنشاء سنة مالية لهذه المؤسسة',
+            'Insufficient permission: you cannot create a fiscal year for this company'
+          )
+        )
       }
       if (!r.ok) {
         const e = await r.json().catch(() => ({}))
@@ -141,7 +265,12 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
         body: JSON.stringify(payload),
       })
       if (r.status === 403) {
-        throw new Error(txt('صلاحية غير كافية: لا تملك صلاحية حفظ أو تعديل الفترة المالية', 'Insufficient permission: you cannot save or modify fiscal periods'))
+        throw new Error(
+          txt(
+            'صلاحية غير كافية: لا تملك صلاحية حفظ أو تعديل الفترة المالية',
+            'Insufficient permission: you cannot save or modify fiscal periods'
+          )
+        )
       }
       if (!r.ok) {
         const e = await r.json().catch(() => ({}))
@@ -171,7 +300,9 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
         body: JSON.stringify({ state }),
       })
       if (r.status === 403) {
-        throw new Error(txt('صلاحية غير كافية لتعديل حالة الفترة المالية', 'Insufficient permission to change period status'))
+        throw new Error(
+          txt('صلاحية غير كافية لتعديل حالة الفترة المالية', 'Insufficient permission to change period status')
+        )
       }
       if (!r.ok) {
         const e = await r.json().catch(() => ({}))
@@ -223,7 +354,8 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
     setPeriodDialogOpen(true)
   }
 
-  const handleExport = () =>
+  // Export handlers
+  const handleExportCSV = () => {
     exportToCSV(
       'fiscal-periods',
       filteredPeriods.map((p: any) => ({
@@ -231,10 +363,186 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
         period: p.name,
         start: new Date(p.startDate).toLocaleDateString('en-CA'),
         end: new Date(p.endDate).toLocaleDateString('en-CA'),
-        quarter: p.quarter || '',
+        quarter: p.quarter ? `Q${p.quarter}` : '',
         state: p.state,
       }))
     )
+    toast.success(txt('تم تصدير البيانات إلى CSV بنجاح', 'Exported to CSV successfully'))
+  }
+
+  const handleExportExcel = () => {
+    exportToCSV(
+      `fiscal-periods_${new Date().toISOString().slice(0, 10)}`,
+      filteredPeriods.map((p: any) => ({
+        [txt('السنة المالية', 'Fiscal Year')]: p.fiscalYearName,
+        [txt('اسم الفترة', 'Period Name')]: p.name,
+        [txt('تاريخ البداية', 'Start Date')]: new Date(p.startDate).toLocaleDateString('en-CA'),
+        [txt('تاريخ النهاية', 'End Date')]: new Date(p.endDate).toLocaleDateString('en-CA'),
+        [txt('الربع', 'Quarter')]: p.quarter ? `Q${p.quarter}` : '',
+        [txt('الحالة', 'Status')]: p.state,
+      }))
+    )
+    toast.success(txt('تم تصدير البيانات إلى Excel بنجاح', 'Exported to Excel successfully'))
+  }
+
+  const handleExportWord = () => {
+    const title = txt('تقرير الفترات المالية', 'Fiscal Periods Report')
+    const headers = [
+      txt('السنة المالية', 'Fiscal Year'),
+      txt('اسم الفترة', 'Period Name'),
+      txt('تاريخ البداية', 'Start Date'),
+      txt('تاريخ النهاية', 'End Date'),
+      txt('الربع', 'Quarter'),
+      txt('الحالة', 'Status'),
+    ]
+
+    const docHtml = `
+      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta charset='utf-8'>
+        <title>${title}</title>
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: ${isRTL ? 'rtl' : 'ltr'}; text-align: ${isRTL ? 'right' : 'left'}; padding: 25px; }
+          h1 { color: #2563eb; text-align: center; margin-bottom: 5px; font-size: 22px; border-bottom: 2px solid #2563eb; padding-bottom: 10px; }
+          p.subtitle { text-align: center; color: #64748b; margin-bottom: 25px; font-size: 13px; }
+          table { border-collapse: collapse; width: 100%; margin-top: 15px; direction: ${isRTL ? 'rtl' : 'ltr'}; }
+          th { background-color: #2563eb; color: #ffffff; border: 1px solid #1d4ed8; padding: 8px 10px; font-size: 13px; text-align: center; }
+          td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: center; }
+          tr:nth-child(even) { background-color: #f8fafc; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px; }
+        </style>
+      </head>
+      <body dir='${isRTL ? 'rtl' : 'ltr'}'>
+        <h1>${title}</h1>
+        <p class="subtitle">${txt('تاريخ التصدير:', 'Export Date:')} ${new Date().toLocaleDateString(isRTL ? 'ar-SA' : 'en-US')} | ${txt('إجمالي السجلات:', 'Total Records:')} ${filteredPeriods.length}</p>
+        <table>
+          <thead>
+            <tr>
+              ${headers.map((h) => `<th>${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredPeriods
+        .map(
+          (p: any) => `
+              <tr>
+                <td style="font-weight:bold; color:#2563eb;">${p.fiscalYearName}</td>
+                <td>${p.name}</td>
+                <td>${new Date(p.startDate).toLocaleDateString('en-CA')}</td>
+                <td>${new Date(p.endDate).toLocaleDateString('en-CA')}</td>
+                <td>Q${p.quarter || '—'}</td>
+                <td>${p.state}</td>
+              </tr>
+            `
+        )
+        .join('')}
+          </tbody>
+        </table>
+        <div class="footer">${txt('تم التصدير تلقائياً بواسطة نظام أورمينال ERP', 'Exported automatically by Orminal ERP')}</div>
+      </body>
+      </html>
+    `
+
+    const blob = new Blob(['\uFEFF' + docHtml], { type: 'application/msword;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `fiscal_periods_${new Date().toISOString().slice(0, 10)}.doc`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    toast.success(txt('تم تصدير البيانات إلى Word بنجاح', 'Exported to Word successfully'))
+  }
+
+  const handleExportPDF = () => {
+    const printWin = window.open('', '_blank')
+    if (!printWin) {
+      toast.error(txt('تعذر فتح نافذة الطباعة. يرجى السماح بالنوافذ المنبثقة.', 'Could not open print window. Allow popups.'))
+      return
+    }
+
+    const title = txt('تقرير الفترات المالية', 'Fiscal Periods Report')
+    const headers = [
+      txt('السنة المالية', 'Fiscal Year'),
+      txt('اسم الفترة', 'Period Name'),
+      txt('تاريخ البداية', 'Start Date'),
+      txt('تاريخ النهاية', 'End Date'),
+      txt('الربع', 'Quarter'),
+      txt('الحالة', 'Status'),
+    ]
+
+    const content = `
+      <!DOCTYPE html>
+      <html dir="${isRTL ? 'rtl' : 'ltr'}" lang="${isRTL ? 'ar' : 'en'}">
+      <head>
+        <meta charset="utf-8" />
+        <title>${title}</title>
+        <style>
+          @page { size: A4 landscape; margin: 12mm; }
+          body { font-family: 'Segoe UI', Tahoma, system-ui, sans-serif; direction: ${isRTL ? 'rtl' : 'ltr'}; text-align: ${isRTL ? 'right' : 'left'}; color: #0f172a; margin: 0; padding: 20px; background: #fff; }
+          .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px; }
+          .logo { font-size: 20px; font-weight: bold; color: #2563eb; }
+          .info { font-size: 11px; color: #475569; }
+          h2 { font-size: 16px; color: #1e293b; margin: 0 0 15px 0; text-align: center; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+          th { background-color: #2563eb; color: white; padding: 7px 9px; border: 1px solid #1d4ed8; text-align: center; font-weight: 600; }
+          td { padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; }
+          tr:nth-child(even) { background-color: #f8fafc; }
+          .badge { padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; display: inline-block; }
+          .badge-open { background-color: #dcfce7; color: #166534; }
+          .badge-closed { background-color: #fef3c7; color: #92400e; }
+          .badge-locked { background-color: #fee2e2; color: #991b1b; }
+          .footer { margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 10px; text-align: center; font-size: 10px; color: #94a3b8; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="logo">أورمينال تك - ORMINAL ERP</div>
+          <div class="info">${txt('تاريخ التقرير:', 'Report Date:')} ${new Date().toLocaleDateString(isRTL ? 'ar-SA' : 'en-US')}</div>
+        </div>
+        <h2>${title}</h2>
+        <table>
+          <thead>
+            <tr>
+              ${headers.map((h) => `<th>${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredPeriods
+        .map(
+          (p: any) => `
+              <tr>
+                <td style="font-weight:bold; color:#2563eb;">${p.fiscalYearName}</td>
+                <td>${p.name}</td>
+                <td>${new Date(p.startDate).toLocaleDateString('en-CA')}</td>
+                <td>${new Date(p.endDate).toLocaleDateString('en-CA')}</td>
+                <td>Q${p.quarter || '—'}</td>
+                <td>
+                  <span class="badge ${p.state === 'open' ? 'badge-open' : p.state === 'closed' ? 'badge-closed' : 'badge-locked'}">
+                    ${p.state}
+                  </span>
+                </td>
+              </tr>
+            `
+        )
+        .join('')}
+          </tbody>
+        </table>
+        <div class="footer">${txt('تم إنشاء المستند تلقائياً عبر نظام Orminal ERP', 'Document generated by Orminal ERP System')}</div>
+        <script>
+          window.onload = function() {
+            window.print();
+            setTimeout(function() { window.close(); }, 500);
+          };
+        </script>
+      </body>
+      </html>
+    `
+
+    printWin.document.write(content)
+    printWin.document.close()
+    toast.success(txt('جارٍ فتح نافذة الطباعة…', 'Opening print view…'))
+  }
 
   if (error?.message === 'FORBIDDEN') {
     return (
@@ -293,100 +601,826 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
         )}
       </div>
 
-      {/* Main Table */}
-      <div className="rounded-xl border bg-card overflow-hidden ">
-        <ScrollArea className="max-h-[60vh]">
-          <Table className="table-sticky">
-            <TableHeader>
-              <TableRow>
-                <TableHead>{txt('السنة', 'Year')}</TableHead>
-                <TableHead>{txt('الفترة', 'Period')}</TableHead>
-                <TableHead>{txt('من', 'From')}</TableHead>
-                <TableHead>{txt('إلى', 'To')}</TableHead>
-                <TableHead>{txt('الربع', 'Quarter')}</TableHead>
-                <TableHead>{txt('الحالة', 'Status')}</TableHead>
-                <TableHead className={isRTL ? 'text-left' : 'text-right'}>{txt('إجراءات', 'Actions')}</TableHead>
+      {/* Main Table Card (matching org-structure-module.tsx) */}
+      <Card className="border border-border shadow-xs rounded-lg overflow-hidden bg-card">
+
+        {/* ACTION TOOLBAR (Fully Responsive for Mobile & Desktop) */}
+        <div className="p-2 sm:p-2.5 border-b flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2 bg-slate-50/60 dark:bg-slate-900/40">
+          {/* Search, Columns, Status Filter & Year Filter */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full lg:w-auto">
+            {/* Row 1 on mobile: Search Box + Columns Dropdown */}
+            <div className="flex items-center gap-1.5 w-full sm:w-auto">
+              {/* Columns Selector */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-8 px-2.5 gap-1 text-xs bg-background shrink-0">
+                    <span>{txt('أعمدة', 'Columns')}</span>
+                    <ChevronLeft className="size-3 -rotate-90 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align={isRTL ? 'start' : 'end'} className="w-52 max-h-80 overflow-y-auto">
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.fiscalYear}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, fiscalYear: !!v }))}
+                  >
+                    {txt('السنة المالية', 'Fiscal Year')}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.name}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, name: !!v }))}
+                  >
+                    {txt('اسم الفترة', 'Period Name')}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.startDate}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, startDate: !!v }))}
+                  >
+                    {txt('تاريخ البداية', 'Start Date')}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.endDate}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, endDate: !!v }))}
+                  >
+                    {txt('تاريخ النهاية', 'End Date')}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.quarter}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, quarter: !!v }))}
+                  >
+                    {txt('الربع', 'Quarter')}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.state}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, state: !!v }))}
+                  >
+                    {txt('الحالة', 'Status')}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.actions}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, actions: !!v }))}
+                  >
+                    {txt('الإجراءات', 'Actions')}
+                  </DropdownMenuCheckboxItem>
+
+                  <DropdownMenuSeparator className="my-1" />
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setVisibleCols(DEFAULT_VISIBLE_COLS)
+                      toast.success(txt('تمت استعادة إعدادات الأعمدة الافتراضية', 'Columns reset to default'))
+                    }}
+                    className="text-xs font-semibold text-blue-600 dark:text-blue-400 cursor-pointer justify-center py-1.5"
+                  >
+                    {txt('إعادة ضبط الأعمدة الافتراضية', 'Reset Default Columns')}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              {/* Search Box */}
+              <div className="relative flex-1 sm:w-52 min-w-0">
+                <Search className={cn('size-3.5 absolute top-2.5 text-muted-foreground pointer-events-none', isRTL ? 'right-2.5' : 'left-2.5')} />
+                <Input
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value)
+                    setCurrentPage(1)
+                  }}
+                  placeholder={txt('بحث في الفترات…', 'Search periods…')}
+                  className={cn('h-8 text-xs bg-background w-full', isRTL ? 'pr-7 pl-6' : 'pl-7 pr-6')}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearch('')
+                      setCurrentPage(1)
+                    }}
+                    className={cn('absolute top-2 text-muted-foreground hover:text-foreground', isRTL ? 'left-2' : 'right-2')}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Row 2 on mobile: Status Filter Pills + Year Dropdown */}
+            <div className="flex items-center justify-between sm:justify-start gap-1.5 w-full sm:w-auto overflow-x-auto scrollbar-none py-0.5">
+              {/* Status Filter Pills */}
+              <div className="flex items-center bg-slate-200/70 dark:bg-slate-800 p-0.5 rounded-md border border-slate-300/50 dark:border-slate-700 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('all')
+                    setCurrentPage(1)
+                  }}
+                  className={cn(
+                    "px-1 py-0.5 rounded text-[11px] font-medium transition-all whitespace-nowrap",
+                    statusFilter === 'all'
+                      ? "bg-white dark:bg-slate-900 text-foreground font-bold shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {txt('الكل', 'All')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('open')
+                    setCurrentPage(1)
+                  }}
+                  className={cn(
+                    "px-1 py-0.5 rounded text-[11px] font-medium transition-all flex items-center gap-1 whitespace-nowrap",
+                    statusFilter === 'open'
+                      ? "bg-emerald-600 text-white font-bold shadow-xs"
+                      : "text-muted-foreground hover:text-emerald-600"
+                  )}
+                >
+                  <span className="size-1.5 rounded-full bg-emerald-400" />
+                  {txt('مفتوح', 'Open')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('closed')
+                    setCurrentPage(1)
+                  }}
+                  className={cn(
+                    "px-1 py-0.5 rounded text-[11px] font-medium transition-all flex items-center gap-1 whitespace-nowrap",
+                    statusFilter === 'closed'
+                      ? "bg-amber-600 text-white font-bold shadow-xs"
+                      : "text-muted-foreground hover:text-amber-600"
+                  )}
+                >
+                  <span className="size-1.5 rounded-full bg-amber-400" />
+                  {txt('مغلق', 'Closed')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('locked')
+                    setCurrentPage(1)
+                  }}
+                  className={cn(
+                    "px-1 py-0.5 rounded text-[11px] font-medium transition-all flex items-center gap-1 whitespace-nowrap",
+                    statusFilter === 'locked'
+                      ? "bg-rose-600 text-white font-bold shadow-xs"
+                      : "text-muted-foreground hover:text-rose-600"
+                  )}
+                >
+                  <span className="size-1.5 rounded-full bg-rose-400" />
+                  {txt('مقفل', 'Locked')}
+                </button>
+              </div>
+
+              {/* Fiscal Year Filter Dropdown */}
+              <Select
+                value={yearFilter}
+                onValueChange={(v) => {
+                  setYearFilter(v)
+                  setCurrentPage(1)
+                }}
+                dir={dir}
+              >
+                <SelectTrigger className="h-7.5 min-w-[110px] max-w-[140px] sm:w-30 text-xs bg-background shrink-0" dir={dir}>
+                  <SelectValue placeholder={txt('السنة المالية', 'Fiscal Year')} />
+                </SelectTrigger>
+                <SelectContent dir={dir}>
+                  <SelectItem value="all">{txt('الجميع', 'All')}</SelectItem>
+                  {years.map((y: any) => (
+                    <SelectItem key={y.id} value={y.id}>
+                      {y.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Row 3 on mobile (Right Group on Desktop): Action Tools & Add Buttons */}
+          <div className="flex items-center justify-between sm:justify-start gap-1.5 w-full lg:w-auto pt-1 sm:pt-0 border-t lg:border-t-0 border-slate-200/60 dark:border-slate-800">
+            {/* Action Tool Icons */}
+            <div className="flex items-center gap-1 mx-1">
+              {/* Export Dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 w-8 p-0 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer"
+                    title={txt('خيارات التصدير (Excel, CSV, Word, PDF)', 'Export Options (Excel, CSV, Word, PDF)')}
+                  >
+                    <FileSpreadsheet className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align={isRTL ? 'start' : 'end'} sideOffset={6} className="w-35 shadow-xl border-slate-200 dark:border-slate-800 z-50">
+                  <DropdownMenuItem onClick={handleExportExcel} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                    <FileSpreadsheet className="size-4 text-emerald-600 shrink-0" />
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{txt('Excel', 'Excel')}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleExportCSV} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                    <Columns className="size-4 text-blue-600 shrink-0" />
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{txt('CSV', 'CSV')}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleExportWord} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                    <FileText className="size-4 text-indigo-600 shrink-0" />
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{txt('Word', 'Word')}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleExportPDF} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                    <Printer className="size-4 text-red-600 shrink-0" />
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{txt('PDF / طباعة', 'PDF / Print')}</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              {/* Print */}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-950/40"
+                onClick={handleExportPDF}
+                title={txt('طباعة الجدول', 'Print Table')}
+              >
+                <Printer className="size-4" />
+              </Button>
+
+              {/* Refresh */}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                onClick={() => {
+                  qc.invalidateQueries({ queryKey: ['fiscal-years'] })
+                  toast.success(txt('تم تحديث البيانات', 'Data refreshed'))
+                }}
+                title={txt('تحديث البيانات', 'Refresh Data')}
+              >
+                <RotateCw className="size-4" />
+              </Button>
+
+              {/* Lock / Unlock status toggle for selected period */}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!selectedPeriod}
+                className={cn(
+                  "h-8 w-8 p-0 transition-all",
+                  selectedPeriod
+                    ? "text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 shadow-xs hover:scale-105"
+                    : "text-slate-400 opacity-40 cursor-not-allowed"
+                )}
+                onClick={() => {
+                  if (!selectedPeriod) return
+                  if (selectedPeriod.state === 'open') {
+                    updatePeriodMut.mutate({ id: selectedPeriod.id, state: 'closed' })
+                  } else if (selectedPeriod.state === 'closed') {
+                    updatePeriodMut.mutate({ id: selectedPeriod.id, state: 'locked' })
+                  } else {
+                    updatePeriodMut.mutate({ id: selectedPeriod.id, state: 'open' })
+                  }
+                }}
+                title={
+                  selectedPeriod
+                    ? selectedPeriod.state === 'open'
+                      ? txt('إغلاق الفترة المحددة', 'Close selected period')
+                      : selectedPeriod.state === 'closed'
+                        ? txt('قفل الفترة المحددة', 'Lock selected period')
+                        : txt('فتح الفترة المحددة', 'Open selected period')
+                    : txt('اختر فترة من الجدول لتغيير حالتها', 'Select a period from the table')
+                }
+              >
+                <Lock className="size-4" />
+              </Button>
+
+              {/* Edit selected period */}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!selectedPeriod}
+                className={cn(
+                  "h-8 w-8 p-0 transition-all",
+                  selectedPeriod
+                    ? "text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40 shadow-xs hover:scale-105"
+                    : "text-amber-300 opacity-40 cursor-not-allowed"
+                )}
+                onClick={() => {
+                  if (selectedPeriod) handleEditPeriod(selectedPeriod)
+                }}
+                title={
+                  selectedPeriod
+                    ? txt('تعديل الفترة المحددة', 'Edit selected period')
+                    : txt('اختر فترة من الجدول للتعديل', 'Select a period to edit')
+                }
+              >
+                <Edit2 className="size-4" />
+              </Button>
+            </div>
+
+          </div>
+        </div>
+
+        {/* MAIN GRID TABLE WITH HORIZONTAL SCROLLBAR */}
+        <div className="overflow-x-auto min-h-[380px] w-full">
+          <Table className="min-w-[860px] border-collapse text-[11px] table-fixed">
+            <TableHeader className="bg-slate-100/90 dark:bg-slate-900 border-b">
+              <TableRow className="h-8 hover:bg-transparent text-slate-700 dark:text-slate-200">
+                {visibleCols.fiscalYear && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.fiscalYear || 140}px`,
+                      minWidth: `${colWidths.fiscalYear || 140}px`,
+                      maxWidth: `${colWidths.fiscalYear || 140}px`,
+                    }}
+                    className={cn(
+                      'font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap relative select-none group',
+                      isRTL ? 'text-right' : 'text-left'
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="truncate">{txt('السنة المالية', 'Fiscal Year')}</span>
+
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleResizeStart('fiscalYear', e)}
+                      onDoubleClick={() => setColWidths((p) => ({ ...p, fiscalYear: DEFAULT_COL_WIDTHS.fiscalYear }))}
+                      className={cn(
+                        "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                        isRTL ? "-left-1.5" : "-right-1.5",
+                        "bg-transparent"
+                      )}
+                      title={txt('سحب لتغيير عرض العمود (انقر مرتين للإعادة)', 'Drag to resize column (Double click to reset)')}
+                    >
+                      <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                    </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.name && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.name || 180}px`,
+                      minWidth: `${colWidths.name || 180}px`,
+                      maxWidth: `${colWidths.name || 180}px`,
+                    }}
+                    className={cn(
+                      'font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap relative select-none group',
+                      isRTL ? 'text-right' : 'text-left'
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="truncate">{txt('اسم الفترة', 'Period Name')}</span>
+
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleResizeStart('name', e)}
+                      onDoubleClick={() => setColWidths((p) => ({ ...p, name: DEFAULT_COL_WIDTHS.name }))}
+                      className={cn(
+                        "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                        isRTL ? "-left-1.5" : "-right-1.5",
+                        "bg-transparent"
+                      )}
+                      title={txt('سحب لتغيير عرض العمود (انقر مرتين للإعادة)', 'Drag to resize column (Double click to reset)')}
+                    >
+                      <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                    </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.startDate && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.startDate || 125}px`,
+                      minWidth: `${colWidths.startDate || 125}px`,
+                      maxWidth: `${colWidths.startDate || 125}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      <span>{txt('تاريخ البداية', 'Start Date')}</span>
+
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleResizeStart('startDate', e)}
+                      onDoubleClick={() => setColWidths((p) => ({ ...p, startDate: DEFAULT_COL_WIDTHS.startDate }))}
+                      className={cn(
+                        "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                        isRTL ? "-left-1.5" : "-right-1.5",
+                        "bg-transparent"
+                      )}
+                      title={txt('سحب لتغيير عرض العمود (انقر مرتين للإعادة)', 'Drag to resize column (Double click to reset)')}
+                    >
+                      <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                    </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.endDate && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.endDate || 125}px`,
+                      minWidth: `${colWidths.endDate || 125}px`,
+                      maxWidth: `${colWidths.endDate || 125}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      <span>{txt('تاريخ النهاية', 'End Date')}</span>
+
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleResizeStart('endDate', e)}
+                      onDoubleClick={() => setColWidths((p) => ({ ...p, endDate: DEFAULT_COL_WIDTHS.endDate }))}
+                      className={cn(
+                        "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                        isRTL ? "-left-1.5" : "-right-1.5",
+                        "bg-transparent"
+                      )}
+                      title={txt('سحب لتغيير عرض العمود (انقر مرتين للإعادة)', 'Drag to resize column (Double click to reset)')}
+                    >
+                      <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                    </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.quarter && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.quarter || 90}px`,
+                      minWidth: `${colWidths.quarter || 90}px`,
+                      maxWidth: `${colWidths.quarter || 90}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      <span>{txt('الربع', 'Quarter')}</span>
+
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleResizeStart('quarter', e)}
+                      onDoubleClick={() => setColWidths((p) => ({ ...p, quarter: DEFAULT_COL_WIDTHS.quarter }))}
+                      className={cn(
+                        "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                        isRTL ? "-left-1.5" : "-right-1.5",
+                        "bg-transparent"
+                      )}
+                      title={txt('سحب لتغيير عرض العمود (انقر مرتين للإعادة)', 'Drag to resize column (Double click to reset)')}
+                    >
+                      <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                    </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.state && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.state || 110}px`,
+                      minWidth: `${colWidths.state || 110}px`,
+                      maxWidth: `${colWidths.state || 110}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      <span>{txt('الحالة', 'Status')}</span>
+
+                    </div>
+                    <div
+                      onMouseDown={(e) => handleResizeStart('state', e)}
+                      onDoubleClick={() => setColWidths((p) => ({ ...p, state: DEFAULT_COL_WIDTHS.state }))}
+                      className={cn(
+                        "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                        isRTL ? "-left-1.5" : "-right-1.5",
+                        "bg-transparent"
+                      )}
+                      title={txt('سحب لتغيير عرض العمود (انقر مرتين للإعادة)', 'Drag to resize column (Double click to reset)')}
+                    >
+                      <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                    </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.actions && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.actions || 160}px`,
+                      minWidth: `${colWidths.actions || 160}px`,
+                      maxWidth: `${colWidths.actions || 160}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 text-center whitespace-nowrap select-none"
+                  >
+                    <span>{txt('إجراءات سريعة', 'Quick Actions')}</span>
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
+
             <TableBody>
               {isLoading ? (
                 Array.from({ length: 5 }).map((_, i) => (
-                  <TableRow key={i}>
+                  <TableRow key={i} className="h-8 border-b border-slate-200 dark:border-slate-700">
                     {Array.from({ length: 7 }).map((_, j) => (
-                      <TableCell key={j}>
-                        <Skeleton className="h-6" />
+                      <TableCell key={j} className="py-1 px-2 border-r border-slate-100 dark:border-slate-800">
+                        <Skeleton className="h-4 w-full" />
                       </TableCell>
                     ))}
                   </TableRow>
                 ))
-              ) : !filteredPeriods.length ? (
+              ) : paginatedPeriods.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
-                    {txt('لا توجد فترات مالية مطابقة', 'No matching financial periods found')}
+                    {txt('لا توجد فترات مالية مطابقة للمعايير المحددة', 'No matching financial periods found')}
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredPeriods.map((p: any) => (
-                  <TableRow key={p.id}>
-                    <TableCell className="text-sm font-semibold">{p.fiscalYearName}</TableCell>
-                    <TableCell className="text-sm">{p.name}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {new Date(p.startDate).toLocaleDateString('en-CA')}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {new Date(p.endDate).toLocaleDateString('en-CA')}
-                    </TableCell>
-                    <TableCell className="text-xs">Q{p.quarter || '—'}</TableCell>
-                    <TableCell>
-                      <StatusBadge status={p.state} />
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-1.5">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-9 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-                          onClick={() => handleEditPeriod(p)}
-                          title={txt('تعديل الفترة', 'Edit Period')}
+                paginatedPeriods.map((p: any) => {
+                  const isSelected = selectedId === p.id
+
+                  return (
+                    <TableRow
+                      key={p.id}
+                      data-selected={isSelected || undefined}
+                      onClick={() => setSelectedId(p.id)}
+                      onDoubleClick={() => handleEditPeriod(p)}
+                      className={cn(
+                        "h-8 select-none cursor-pointer border-b border-slate-200 dark:border-slate-700 transition-colors",
+                        isSelected
+                          ? "!bg-[#d0e2f7] dark:!bg-[#1e3a5f] !border-l-[3px] !border-l-blue-600 dark:!border-l-blue-400"
+                          : "bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-900/60"
+                      )}
+                      style={isSelected ? { backgroundColor: '#a0ccff50' } : undefined}
+                    >
+                      {visibleCols.fiscalYear && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.fiscalYear || 140}px`,
+                            minWidth: `${colWidths.fiscalYear || 140}px`,
+                            maxWidth: `${colWidths.fiscalYear || 140}px`,
+                          }}
+                          className="font-semibold text-blue-600 dark:text-blue-400 font-mono border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden"
                         >
-                          <Pencil className="size-4" />
-                        </Button>
-                        {p.state === 'open' && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'closed' })}
-                          >
-                            {txt('إغلاق', 'Close')}
-                          </Button>
-                        )}
-                        {p.state === 'closed' && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'locked' })}
-                          >
-                            {txt('قفل', 'Lock')}
-                          </Button>
-                        )}
-                        {(p.state === 'closed' || p.state === 'locked') && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'open' })}
-                          >
-                            {txt('فتح', 'Open')}
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))
+                          <span className="truncate block w-full cursor-default" title={p.fiscalYearName}>
+                            {p.fiscalYearName}
+                          </span>
+                        </TableCell>
+                      )}
+
+                      {visibleCols.name && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.name || 180}px`,
+                            minWidth: `${colWidths.name || 180}px`,
+                            maxWidth: `${colWidths.name || 180}px`,
+                          }}
+                          className="font-medium text-foreground border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden"
+                        >
+                          <span className="truncate block w-full cursor-default" title={p.name}>
+                            {p.name}
+                          </span>
+                        </TableCell>
+                      )}
+
+                      {visibleCols.startDate && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.startDate || 125}px`,
+                            minWidth: `${colWidths.startDate || 125}px`,
+                            maxWidth: `${colWidths.startDate || 125}px`,
+                          }}
+                          className="text-center font-mono text-slate-600 dark:text-slate-400 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden"
+                        >
+                          <span className="truncate block w-full cursor-default">
+                            {new Date(p.startDate).toLocaleDateString('en-CA')}
+                          </span>
+                        </TableCell>
+                      )}
+
+                      {visibleCols.endDate && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.endDate || 125}px`,
+                            minWidth: `${colWidths.endDate || 125}px`,
+                            maxWidth: `${colWidths.endDate || 125}px`,
+                          }}
+                          className="text-center font-mono text-slate-600 dark:text-slate-400 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden"
+                        >
+                          <span className="truncate block w-full cursor-default">
+                            {new Date(p.endDate).toLocaleDateString('en-CA')}
+                          </span>
+                        </TableCell>
+                      )}
+
+                      {visibleCols.quarter && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.quarter || 90}px`,
+                            minWidth: `${colWidths.quarter || 90}px`,
+                            maxWidth: `${colWidths.quarter || 90}px`,
+                          }}
+                          className="text-center font-mono font-bold text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden"
+                        >
+                          Q{p.quarter || '—'}
+                        </TableCell>
+                      )}
+
+                      {visibleCols.state && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.state || 110}px`,
+                            minWidth: `${colWidths.state || 110}px`,
+                            maxWidth: `${colWidths.state || 110}px`,
+                          }}
+                          className="text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden"
+                        >
+                          <div className="flex items-center justify-center">
+                            {p.state === 'open' && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+                                <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                {txt('مفتوح', 'Open')}
+                              </span>
+                            )}
+                            {p.state === 'closed' && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
+                                <span className="size-1.5 rounded-full bg-amber-500" />
+                                {txt('مغلق', 'Closed')}
+                              </span>
+                            )}
+                            {p.state === 'locked' && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800">
+                                <span className="size-1.5 rounded-full bg-rose-500" />
+                                {txt('مقفل', 'Locked')}
+                              </span>
+                            )}
+                            {p.state !== 'open' && p.state !== 'closed' && p.state !== 'locked' && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700">
+                                <span className="size-1.5 rounded-full bg-slate-400" />
+                                {txt('مسودة', 'Draft')}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                      )}
+
+                      {visibleCols.actions && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.actions || 160}px`,
+                            minWidth: `${colWidths.actions || 160}px`,
+                            maxWidth: `${colWidths.actions || 160}px`,
+                          }}
+                          className="py-1 px-2 overflow-hidden"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-6 p-0 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                              onClick={() => handleEditPeriod(p)}
+                              title={txt('تعديل الفترة', 'Edit Period')}
+                            >
+                              <Pencil className="size-3" />
+                            </Button>
+                            {p.state === 'open' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-1.5 text-[10px] text-amber-700 hover:text-amber-800 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40 border-amber-300/60 font-medium"
+                                onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'closed' })}
+                              >
+                                {txt('إغلاق', 'Close')}
+                              </Button>
+                            )}
+                            {p.state === 'closed' && (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 px-1.5 text-[10px] text-rose-700 hover:text-rose-800 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/40 border-rose-300/60 font-medium"
+                                  onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'locked' })}
+                                >
+                                  {txt('قفل', 'Lock')}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-6 px-1.5 text-[10px] text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40 border-emerald-300/60 font-medium"
+                                  onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'open' })}
+                                >
+                                  {txt('فتح', 'Open')}
+                                </Button>
+                              </>
+                            )}
+                            {p.state === 'locked' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-1.5 text-[10px] text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40 border-emerald-300/60 font-medium"
+                                onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'open' })}
+                              >
+                                {txt('فتح', 'Open')}
+                              </Button>
+                            )}
+                            {p.state === 'draft' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-1.5 text-[10px] text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40 border-emerald-300/60 font-medium"
+                                onClick={() => updatePeriodMut.mutate({ id: p.id, state: 'open' })}
+                              >
+                                {txt('فتح', 'Open')}
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  )
+                })
               )}
             </TableBody>
           </Table>
-        </ScrollArea>
-      </div>
+        </div>
+
+        {/* PAGINATION FOOTER (Exact replica of org-structure-module.tsx) */}
+        <div className="p-2.5 bg-slate-100/90 dark:bg-slate-900 border-t flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700 dark:text-slate-300">
+          <div className="flex items-center gap-2">
+            <span>
+              {txt(
+                `${currentPage} من ${totalPages} صفحة العناصر ${filteredPeriods.length}`,
+                `Page ${currentPage} of ${totalPages} (Items ${filteredPeriods.length})`
+              )}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">{txt('العناصر', 'Items')}</span>
+              <Select
+                value={pageSize.toString()}
+                onValueChange={(val) => {
+                  setPageSize(Number(val))
+                  setCurrentPage(1)
+                }}
+              >
+                <SelectTrigger className="h-7 w-16 text-xs bg-background">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-1 dir-ltr">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                className="h-7 w-7 p-0 bg-background"
+                title={txt('الصفحة الأولى', 'First Page')}
+              >
+                <ChevronsLeft className="size-3.5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="h-7 w-7 p-0 bg-background"
+                title={txt('الصفحة السابقة', 'Previous Page')}
+              >
+                <ChevronLeft className="size-3.5" />
+              </Button>
+
+              <span className="h-7 min-w-[28px] px-2 flex items-center justify-center rounded-md bg-blue-600 text-white font-mono font-bold text-xs">
+                {currentPage}
+              </span>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="h-7 w-7 p-0 bg-background"
+                title={txt('الصفحة التالية', 'Next Page')}
+              >
+                <ChevronRight className="size-3.5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className="h-7 w-7 p-0 bg-background"
+                title={txt('الصفحة الأخيرة', 'Last Page')}
+              >
+                <ChevronsRight className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card>
 
       {/* Dialog: Add Fiscal Year */}
       <Dialog open={yearDialogOpen} onOpenChange={setYearDialogOpen}>
@@ -403,7 +1437,6 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
                 <DialogTitle className="text-xl font-bold tracking-tight text-blue-955 dark:text-white">
                   {txt('إضافة سنة مالية جديدة', 'Add New Fiscal Year')}
                 </DialogTitle>
-
               </div>
             </div>
           </DialogHeader>
@@ -497,7 +1530,7 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
             </div>
           </DialogBody>
 
-          <DialogFooter className="px-6 py-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-end gap-2 shrink-0">
+          <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setYearDialogOpen(false)}
@@ -533,7 +1566,6 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
                     ? txt('تعديل الفترة المالية', 'Edit Financial Period')
                     : txt('إضافة فترة مالية جديدة', 'Add New Financial Period')}
                 </DialogTitle>
-
               </div>
             </div>
           </DialogHeader>
@@ -653,7 +1685,7 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
             <Button
               variant="outline"
               onClick={() => setPeriodDialogOpen(false)}
-              className="h-10 px-5 border-slate-250 ddark:border-blue-400/30 hover:bg-slate-100 dark:hover:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-300"
+              className="h-10 px-5 border-slate-250 dark:border-blue-400/30 hover:bg-slate-100 dark:hover:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-300"
             >
               {txt('إلغاء', 'Cancel')}
             </Button>
@@ -687,91 +1719,32 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
             </div>
             <div>
               <h2 className="text-lg font-bold tracking-tight">{txt('الفترات المالية', 'Financial Periods')}</h2>
-              <p className="text-xs text-muted-foreground">{txt('إدارة السنوات والفترات المالية', 'Manage fiscal years, periods')}</p>
+              <p className="text-xs text-muted-foreground">
+                {txt('إدارة السنوات والفترات المالية', 'Manage fiscal years, periods')}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <Button
               variant="outline"
               size="sm"
-              onClick={handleExport}
-              className="gap-1.5 h-9"
-            >
-              <Download className="size-4" />
-              <span>{txt('تصدير', 'Export')}</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
               onClick={handleAddYear}
-              className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-9"
+              className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-8 text-xs"
             >
-              <Plus className="size-4" />
+              <CalendarClock className="size-3.5 text-blue-600" />
               <span>{txt('إضافة سنة مالية', 'Add Fiscal Year')}</span>
             </Button>
-            <Button
+            {/* <Button
               size="sm"
               onClick={handleAddPeriod}
-              className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-9"
+              className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-8 text-xs"
             >
-              <Plus className="size-4" />
+              <Plus className="size-3.5" />
               <span>{txt('إضافة فترة مالية', 'Add Financial Period')}</span>
-            </Button>
+            </Button> */}
           </div>
         </div>
 
-        {/* Search & Filters */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="relative sm:max-w-xs w-full">
-            <Search className="absolute inset-y-0 start-3 my-auto size-4 text-muted-foreground pointer-events-none" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={txt('بحث عن الفترات...', 'Search periods...')}
-              className="ps-9 h-9 text-xs"
-            />
-          </div>
-          <div className="flex items-center gap-4 flex-wrap">
-            {/* Status Filter */}
-            <div className="flex items-center gap-2 min-w-[140px]">
-              <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                {txt('الحالة:', 'Status:')}
-              </Label>
-              <Select value={statusFilter} onValueChange={setStatusFilter} dir={dir}>
-                <SelectTrigger className="h-9 w-[120px]" dir={dir}>
-                  <SelectValue placeholder={txt('الحالة', 'Status')} />
-                </SelectTrigger>
-                <SelectContent dir={dir}>
-                  <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
-                  <SelectItem value="draft">{txt('مسودة', 'Draft')}</SelectItem>
-                  <SelectItem value="open">{txt('مفتوح', 'Open')}</SelectItem>
-                  <SelectItem value="closed">{txt('مغلق', 'Closed')}</SelectItem>
-                  <SelectItem value="locked">{txt('مقفل', 'Locked')}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Year Filter */}
-            <div className="flex items-center gap-2 min-w-[160px]">
-              <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-                {txt('السنة:', 'Year:')}
-              </Label>
-              <Select value={yearFilter} onValueChange={setYearFilter} dir={dir}>
-                <SelectTrigger className="h-9 w-[140px]" dir={dir}>
-                  <SelectValue placeholder={txt('السنة المالية', 'Fiscal Year')} />
-                </SelectTrigger>
-                <SelectContent dir={dir}>
-                  <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
-                  {years.map((y: any) => (
-                    <SelectItem key={y.id} value={y.id}>
-                      {y.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </div>
         {bodyContent}
       </div>
     )
@@ -782,69 +1755,25 @@ export function FiscalPeriodsModule({ embedded = false }: { embedded?: boolean }
       title={txt('الفترات المالية', 'Financial Periods')}
       description={txt('إدارة السنوات والفترات المالية ', 'Manage fiscal years, periods ')}
       icon={<CalendarClock className="size-5" />}
-      onSearch={setSearch}
-      searchValue={search}
-      searchPlaceholder={txt('بحث عن الفترات...', 'Search periods...')}
-      onExport={handleExport}
       actions={
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={handleAddYear}
-            className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-9"
+            className="gap-1.5 border-slate-250 dark:border-blue-400/30 text-slate-700 dark:text-slate-300 h-8 text-xs"
           >
-            <Plus className="size-4" />
+            <CalendarClock className="size-3.5 text-blue-600" />
             <span>{txt('إضافة سنة مالية', 'Add Fiscal Year')}</span>
           </Button>
           <Button
             size="sm"
             onClick={handleAddPeriod}
-            className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-9"
+            className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-8 text-xs"
           >
-            <Plus className="size-4" />
+            <Plus className="size-3.5" />
             <span>{txt('إضافة فترة مالية', 'Add Financial Period')}</span>
           </Button>
-        </div>
-      }
-      filters={
-        <div className="flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2 min-w-[140px]">
-            <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-              {txt('الحالة:', 'Status:')}
-            </Label>
-            <Select value={statusFilter} onValueChange={setStatusFilter} dir={dir}>
-              <SelectTrigger className="h-9 w-[120px]" dir={dir}>
-                <SelectValue placeholder={txt('الحالة', 'Status')} />
-              </SelectTrigger>
-              <SelectContent dir={dir}>
-                <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
-                <SelectItem value="draft">{txt('مسودة', 'Draft')}</SelectItem>
-                <SelectItem value="open">{txt('مفتوح', 'Open')}</SelectItem>
-                <SelectItem value="closed">{txt('مغلق', 'Closed')}</SelectItem>
-                <SelectItem value="locked">{txt('مقفل', 'Locked')}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-center gap-2 min-w-[160px]">
-            <Label className="text-xs font-semibold text-muted-foreground whitespace-nowrap">
-              {txt('السنة:', 'Year:')}
-            </Label>
-            <Select value={yearFilter} onValueChange={setYearFilter} dir={dir}>
-              <SelectTrigger className="h-9 w-[140px]" dir={dir}>
-                <SelectValue placeholder={txt('السنة المالية', 'Fiscal Year')} />
-              </SelectTrigger>
-              <SelectContent dir={dir}>
-                <SelectItem value="all">{txt('الكل', 'All')}</SelectItem>
-                {years.map((y: any) => (
-                  <SelectItem key={y.id} value={y.id}>
-                    {y.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
         </div>
       }
     >

@@ -40,6 +40,7 @@ export const CONFIG_TREE: ConfigTreeSection[] = [
       { id: 'numbering', labelAr: 'تسلسلات أرقام المستندات', labelEn: 'Document Numbering', legacyCategories: ['numbering'] },
       { id: 'datetime', labelAr: 'التاريخ والوقت', labelEn: 'Date & Time' },
       { id: 'org_structure', labelAr: 'الهيكل التنظيمي', labelEn: 'Organizational Structure' },
+      { id: 'subledgers_naming', labelAr: 'تسمية الأدلة الفرعية', labelEn: 'Subledgers Naming' },
     ],
   },
   {

@@ -32,6 +32,7 @@ import {
   ClipboardList, Plus, Trash2, Printer, CheckCircle2, Clock, FileCheck2, ShoppingCart,
   Download, FileSpreadsheet, FileText, FileDown, Eye,
 } from 'lucide-react'
+import { useSubledgerLabels } from '@/hooks/use-subledger-labels'
 
 interface Product { id: string; sku: string; nameAr: string }
 interface Partner { id: string; code: string; nameAr: string }
@@ -138,6 +139,9 @@ export function PurchaseRequestsModule() {
       return r.json()
     },
   })
+
+  const { getSubledgerName } = useSubledgerLabels()
+  const costCenterLabel = getSubledgerName('COST_CENTER', L('مركز التكلفة', 'Cost Center'))
 
   const { data: costCentersData } = useQuery<{ data: CostCenter[] }>({
     queryKey: ['cost-centers-for-pr'],
@@ -636,7 +640,7 @@ export function PurchaseRequestsModule() {
                         <Input className={`h-9 text-start tabular-nums ${viewOnly ? 'cursor-not-allowed' : ''}`} type="number" step="1" inputMode="decimal" dir="ltr" value={l.quantity} onChange={(e) => updateLine(l.key, 'quantity', e.target.value)} />
                       </div>
                       <div className="space-y-1">
-                        <Label className="text-xs">{L('مركز التكلفة', 'Cost Center')}</Label>
+                        <Label className="text-xs">{costCenterLabel}</Label>
                         <Select value={l.costCenterId} onValueChange={(v) => updateLine(l.key, 'costCenterId', v)}>
                           <SelectTrigger className={`h-9 w-full ${viewOnly ? 'cursor-not-allowed' : ''}`}><SelectValue placeholder={L('بدون', 'None')} /></SelectTrigger>
                           <SelectContent dir={isRTL ? 'rtl' : 'ltr'}>
@@ -672,7 +676,7 @@ export function PurchaseRequestsModule() {
                       <TableRow className="bg-muted/50">
                         <TableHead className="ps-3 w-64">{L('المنتج', 'Product')}</TableHead>
                         <TableHead className="text-start w-32">{L('الكمية', 'Qty')}</TableHead>
-                        <TableHead className="w-48">{L('مركز التكلفة', 'Cost Center')}</TableHead>
+                        <TableHead className="w-48">{costCenterLabel}</TableHead>
                         <TableHead className="w-48">{L('ملاحظات', 'Notes')}</TableHead>
                         {!viewOnly && <TableHead className="w-15"></TableHead>}
                       </TableRow>

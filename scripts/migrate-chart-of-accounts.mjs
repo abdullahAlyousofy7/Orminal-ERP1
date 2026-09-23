@@ -465,7 +465,7 @@ async function main() {
       CEO: { nameAr: 'المدير التنفيذي', nameEn: 'Chief Executive Officer' },
       AUDITOR: { nameAr: 'مراجع مالي', nameEn: 'Financial Auditor' },
       CASHIER: { nameAr: 'أمين صندوق', nameEn: 'Cashier' },
-      VIEWER: { nameAr: 'مستطلع / عرض فقط', nameEn: 'Viewer' },
+      VIEWER: { nameAr: 'عرض فقط', nameEn: 'Viewer' },
     }
 
     for (const [roleCode, grants] of Object.entries(ROLE_GRANTS)) {

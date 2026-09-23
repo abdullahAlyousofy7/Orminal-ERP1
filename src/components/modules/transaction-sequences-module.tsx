@@ -32,6 +32,8 @@ import {
   Lock,
   ArrowUpDown,
   MoreHorizontal,
+  Columns,
+  RotateCw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,6 +42,22 @@ import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,8 +74,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuCheckboxItem,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { useNav } from '@/stores/nav-store'
+import { useT } from '@/lib/i18n/use-t'
+import { toast } from 'sonner'
+import { exportToCSV } from '@/lib/export'
+import { cn } from '@/lib/utils'
 
 interface SequenceDocType {
   id: string
@@ -128,7 +151,11 @@ interface TransactionSequenceItem {
 
 export function TransactionSequencesModule() {
   const { setActiveModule } = useNav()
-  const [isAr, setIsAr] = useState(true)
+  const { isRTL } = useT()
+  const isAr = isRTL
+
+  // Selection state (matching fiscal-periods-module.tsx)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // Dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -136,6 +163,7 @@ export function TransactionSequencesModule() {
 
   // Module state
   const [items, setItems] = useState<TransactionSequenceItem[]>([])
+  const selectedItem = useMemo(() => items.find((it) => it.id === selectedId) || null, [items, selectedId])
   const [docTypes, setDocTypes] = useState<SequenceDocType[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -144,9 +172,9 @@ export function TransactionSequencesModule() {
   const [selectedModule, setSelectedModule] = useState<string>('ALL')
   const [groupBy, setGroupBy] = useState<string | null>(null)
 
-  // Pagination
+  // Pagination (matching fiscal-periods-module.tsx)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(20)
   const [totalItems, setTotalItems] = useState(0)
 
   // View / Edit Mode: 'list' | 'create' | 'edit'
@@ -191,19 +219,181 @@ export function TransactionSequencesModule() {
     segments: [],
   })
 
-  // Visible Columns toggler
-  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
-    docTypeCode: true,
-    nameAr: true,
-    sequenceNumber: true,
-    dateDisplayMode: true,
-    active: true,
-    initialValue: true,
-    numberLength: true,
-    createdById: true,
-    entryStartDate: true,
-    actions: true,
-  })
+  // Visible Columns toggler (matching fiscal-periods-module.tsx)
+  const DEFAULT_VISIBLE_COLUMNS = useMemo(
+    () => ({
+      docTypeCode: true,
+      nameAr: true,
+      sequenceNumber: true,
+      dateDisplayMode: true,
+      active: true,
+      initialValue: true,
+      numberLength: true,
+      createdById: true,
+      entryStartDate: true,
+      actions: true,
+    }),
+    []
+  )
+  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(DEFAULT_VISIBLE_COLUMNS)
+
+  // Column Resizing Controls (matching fiscal-periods-module.tsx)
+  const DEFAULT_COL_WIDTHS = useMemo<Record<string, number>>(
+    () => ({
+      docTypeCode: 140,
+      nameAr: 180,
+      sequenceNumber: 85,
+      dateDisplayMode: 120,
+      active: 85,
+      initialValue: 110,
+      numberLength: 110,
+      createdById: 100,
+      entryStartDate: 150,
+      actions: 110,
+    }),
+    []
+  )
+  const [colWidths, setColWidths] = useState<Record<string, number>>(DEFAULT_COL_WIDTHS)
+
+  const handleResizeStart = (colKey: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startWidth = colWidths[colKey] || DEFAULT_COL_WIDTHS[colKey] || 120
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = isAr ? startX - moveEvent.clientX : moveEvent.clientX - startX
+      const newWidth = Math.max(60, startWidth + deltaX)
+      setColWidths((prev) => ({ ...prev, [colKey]: newWidth }))
+    }
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }
+
+  // Export handlers (matching fiscal-periods-module.tsx)
+  const handleExportCSV = () => {
+    if (!items.length) {
+      toast.error(isAr ? 'لا توجد بيانات للتصدير' : 'No data to export')
+      return
+    }
+    exportToCSV(
+      `transaction_sequences_${new Date().toISOString().slice(0, 10)}.csv`,
+      items.map((it) => ({
+        docTypeCode: it.sequenceDocType?.code || '',
+        nameAr: it.nameAr,
+        nameEn: it.nameEn || '',
+        sequenceNumber: it.sequenceNumber,
+        dateDisplayMode: it.dateDisplayMode === 'automatic' ? 'Auto' : 'Manual',
+        active: it.active ? 'Active' : 'Inactive',
+        initialValue: it.initialValue,
+        numberLength: it.numberLength,
+        createdById: it.createdById || '1',
+        entryStartDate: it.entryStartDate || it.createdAt,
+      })),
+      [
+        { key: 'docTypeCode', label: isAr ? 'نوع وثيقة التسلسل' : 'Doc Type Code' },
+        { key: 'nameAr', label: isAr ? 'الاسم' : 'Name' },
+        { key: 'nameEn', label: isAr ? 'الاسم الإنجليزي' : 'English Name' },
+        { key: 'sequenceNumber', label: isAr ? 'التسلسل' : 'Sequence' },
+        { key: 'dateDisplayMode', label: isAr ? 'طريقة عرض التاريخ' : 'Date Mode' },
+        { key: 'active', label: isAr ? 'الحالة' : 'Status' },
+        { key: 'initialValue', label: isAr ? 'القيمة الابتدائية' : 'Initial Value' },
+        { key: 'numberLength', label: isAr ? 'طول الرقم' : 'Length' },
+        { key: 'createdById', label: isAr ? 'مدخل البيانات' : 'Created By' },
+        { key: 'entryStartDate', label: isAr ? 'تاريخ بدء الإدخال' : 'Start Date' },
+      ]
+    )
+    toast.success(isAr ? 'تم تصدير البيانات إلى CSV بنجاح' : 'Exported to CSV successfully')
+  }
+
+  const handleExportExcel = () => {
+    handleExportCSV()
+  }
+
+  const handleExportWord = () => {
+    if (!items.length) {
+      toast.error(isAr ? 'لا توجد بيانات للتصدير' : 'No data to export')
+      return
+    }
+    const title = isAr ? 'تقرير تسلسلات العمليات' : 'Transaction Sequences Report'
+    const headers = [
+      isAr ? 'نوع الوثيقة' : 'Doc Type Code',
+      isAr ? 'الاسم' : 'Name',
+      isAr ? 'التسلسل' : 'Seq',
+      isAr ? 'طريقة التاريخ' : 'Date Mode',
+      isAr ? 'الحالة' : 'Status',
+      isAr ? 'القيمة الابتدائية' : 'Initial Val',
+      isAr ? 'طول الرقم' : 'Length',
+    ]
+
+    const docHtml = `
+      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta charset='utf-8'>
+        <title>${title}</title>
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: ${isAr ? 'rtl' : 'ltr'}; text-align: ${isAr ? 'right' : 'left'}; padding: 25px; }
+          h1 { color: #2563eb; text-align: center; margin-bottom: 5px; font-size: 22px; border-bottom: 2px solid #2563eb; padding-bottom: 10px; }
+          p.subtitle { text-align: center; color: #64748b; margin-bottom: 25px; font-size: 13px; }
+          table { border-collapse: collapse; width: 100%; margin-top: 15px; direction: ${isAr ? 'rtl' : 'ltr'}; }
+          th { background-color: #2563eb; color: #ffffff; border: 1px solid #1d4ed8; padding: 8px 10px; font-size: 13px; text-align: center; }
+          td { border: 1px solid #cbd5e1; padding: 6px 8px; font-size: 12px; text-align: center; }
+          tr:nth-child(even) { background-color: #f8fafc; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px; }
+        </style>
+      </head>
+      <body dir='${isAr ? 'rtl' : 'ltr'}'>
+        <h1>${title}</h1>
+        <p class="subtitle">${isAr ? 'تاريخ التصدير:' : 'Export Date:'} ${new Date().toLocaleDateString(isAr ? 'ar-SA' : 'en-US')} | ${isAr ? 'إجمالي السجلات:' : 'Total Records:'} ${items.length}</p>
+        <table>
+          <thead>
+            <tr>
+              ${headers.map((h) => `<th>${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${items
+              .map(
+                (it: any) => `
+              <tr>
+                <td style="font-weight:bold; color:#2563eb;">${it.sequenceDocType?.code || '-'}</td>
+                <td>${isAr ? it.nameAr : it.nameEn || it.nameAr}</td>
+                <td>${it.sequenceNumber}</td>
+                <td>${it.dateDisplayMode === 'automatic' ? (isAr ? 'آلي' : 'Auto') : (isAr ? 'يدوي' : 'Manual')}</td>
+                <td>${it.active ? (isAr ? 'فعال' : 'Active') : (isAr ? 'معطل' : 'Inactive')}</td>
+                <td>${it.initialValue}</td>
+                <td>${it.numberLength || '-'}</td>
+              </tr>
+            `
+              )
+              .join('')}
+          </tbody>
+        </table>
+        <div class="footer">${isAr ? 'تم التصدير تلقائياً بواسطة نظام أورمينال ERP' : 'Exported automatically by Orminal ERP'}</div>
+      </body>
+      </html>
+    `
+
+    const blob = new Blob(['\uFEFF' + docHtml], { type: 'application/msword;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.setAttribute('href', url)
+    link.setAttribute('download', `transaction_sequences_${new Date().toISOString().slice(0, 10)}.doc`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    toast.success(isAr ? 'تم تصدير البيانات إلى Word بنجاح' : 'Exported to Word successfully')
+  }
+
+  const handleExportPDF = () => {
+    window.print()
+  }
 
   // Fetch items & document catalog
   const fetchData = async () => {
@@ -254,12 +444,13 @@ export function TransactionSequencesModule() {
       const res = await fetch('/api/erp/transaction-sequences/initialize', { method: 'POST' })
       const json = await res.json()
       if (res.ok || json.success) {
+        toast.success(isAr ? 'تمت تهيئة التسلسلات القياسية بنجاح' : 'Standard sequences initialized successfully')
         await fetchData()
       } else {
-        alert(json.error?.message || 'فشلت التهيئة القياسية')
+        toast.error(json.error?.message || (isAr ? 'فشلت التهيئة القياسية' : 'Failed to initialize'))
       }
     } catch (e: any) {
-      alert(e.message)
+      toast.error(e.message)
     } finally {
       setLoading(false)
     }
@@ -275,12 +466,13 @@ export function TransactionSequencesModule() {
       })
       const json = await res.json()
       if (res.ok || json.success) {
+        toast.success(isAr ? 'تم تعديل حالة التسلسل بنجاح' : 'Status updated successfully')
         await fetchData()
       } else {
-        alert(json.error?.message || 'فشل تعديل الحالة')
+        toast.error(json.error?.message || (isAr ? 'فشل تعديل الحالة' : 'Failed to update status'))
       }
     } catch (e: any) {
-      alert(e.message)
+      toast.error(e.message)
     }
   }
 
@@ -559,320 +751,851 @@ export function TransactionSequencesModule() {
       </div>
 
       {/* ========================================================================= */}
-      {/* 1. LIST VIEW (Matching Screenshot 1, 2, 3, 4)                             */}
+      {/* 1. LIST VIEW (Matching fiscal-periods-module.tsx Design Standard)          */}
       {/* ========================================================================= */}
       {viewMode === 'list' && (
-        <div className="flex-1 flex flex-col space-y-3">
+        <Card className="border border-border shadow-xs rounded-lg overflow-hidden bg-card flex-1 flex flex-col">
 
-          {/* Action Toolbar */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-3 shadow-sm">
-            <div className="flex items-center gap-2 flex-1 min-w-[280px] max-w-md">
-              <div className="relative w-full">
-                <Search className="w-4 h-4 absolute top-2.5 start-3 text-slate-400" />
-                <Input
-                  placeholder={isAr ? 'بحث بالاسم، الكود، البادئة...' : 'Search by name, code, prefix...'}
-                  value={searchQuery}
-                  onChange={(e) => {
-                    setSearchQuery(e.target.value)
+          {/* ACTION TOOLBAR (Matching fiscal-periods-module.tsx) */}
+          <div className="p-2 sm:p-2.5 border-b flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2 bg-slate-50/60 dark:bg-slate-900/40">
+            {/* Search, Columns, Status Filter & Module Filter */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full lg:w-auto">
+              {/* Row 1 on mobile: Columns Dropdown + Search Box */}
+              <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                {/* Columns Selector */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-8 px-2.5 gap-1 text-xs bg-background shrink-0">
+                      <span>{isAr ? 'أعمدة' : 'Columns'}</span>
+                      <ChevronLeft className="size-3 -rotate-90 text-muted-foreground" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align={isAr ? 'start' : 'end'} className="w-52 max-h-80 overflow-y-auto">
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.docTypeCode}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, docTypeCode: !!v }))}
+                    >
+                      {isAr ? 'نوع وثيقة التسلسل' : 'Doc Type Code'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.nameAr}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, nameAr: !!v }))}
+                    >
+                      {isAr ? 'النوع / الاسم' : 'Type / Name'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.sequenceNumber}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, sequenceNumber: !!v }))}
+                    >
+                      {isAr ? 'التسلسل' : 'Sequence'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.dateDisplayMode}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, dateDisplayMode: !!v }))}
+                    >
+                      {isAr ? 'طريقة عرض التاريخ' : 'Date Display Mode'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.active}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, active: !!v }))}
+                    >
+                      {isAr ? 'الحالة (فعال)' : 'Active'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.initialValue}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, initialValue: !!v }))}
+                    >
+                      {isAr ? 'القيمة الابتدائية' : 'Initial Value'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.numberLength}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, numberLength: !!v }))}
+                    >
+                      {isAr ? 'طول رقم الوثيقة' : 'Number Length'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.createdById}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, createdById: !!v }))}
+                    >
+                      {isAr ? 'مدخل البيانات' : 'Created By'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.entryStartDate}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, entryStartDate: !!v }))}
+                    >
+                      {isAr ? 'تاريخ بدء الإدخال' : 'Entry Start Date'}
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuCheckboxItem
+                      checked={visibleColumns.actions}
+                      onCheckedChange={(v) => setVisibleColumns((p) => ({ ...p, actions: !!v }))}
+                    >
+                      {isAr ? 'الإجراءات' : 'Actions'}
+                    </DropdownMenuCheckboxItem>
+
+                    <DropdownMenuSeparator className="my-1" />
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setVisibleColumns(DEFAULT_VISIBLE_COLUMNS)
+                        toast.success(isAr ? 'تمت استعادة إعدادات الأعمدة الافتراضية' : 'Columns reset to default')
+                      }}
+                      className="text-xs font-semibold text-blue-600 dark:text-blue-400 cursor-pointer justify-center py-1.5"
+                    >
+                      {isAr ? 'إعادة ضبط الأعمدة الافتراضية' : 'Reset Default Columns'}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                {/* Search Box */}
+                <div className="relative flex-1 sm:w-56 min-w-0">
+                  <Search className={cn('size-3.5 absolute top-2.5 text-muted-foreground pointer-events-none', isAr ? 'right-2.5' : 'left-2.5')} />
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value)
+                      setPage(1)
+                    }}
+                    placeholder={isAr ? 'بحث بالاسم، الكود، البادئة...' : 'Search by name, code...'}
+                    className={cn('h-8 text-xs bg-background w-full', isAr ? 'pr-7 pl-6' : 'pl-7 pr-6')}
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('')
+                        setPage(1)
+                      }}
+                      className={cn('absolute top-2 text-muted-foreground hover:text-foreground cursor-pointer', isAr ? 'left-2' : 'right-2')}
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 2 on mobile: Status Filter Pills + Module Dropdown */}
+              <div className="flex items-center justify-between sm:justify-start gap-1.5 w-full sm:w-auto overflow-x-auto scrollbar-none py-0.5">
+                {/* Status Filter Pills */}
+                <div className="flex items-center bg-slate-200/70 dark:bg-slate-800 p-0.5 rounded-md border border-slate-300/50 dark:border-slate-700 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveOnly(false)
+                      setPage(1)
+                    }}
+                    className={cn(
+                      "px-1.5 py-0.5 rounded text-[11px] font-medium transition-all whitespace-nowrap cursor-pointer",
+                      !activeOnly
+                        ? "bg-white dark:bg-slate-900 text-foreground font-bold shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {isAr ? 'الكل' : 'All'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveOnly(true)
+                      setPage(1)
+                    }}
+                    className={cn(
+                      "px-1.5 py-0.5 rounded text-[11px] font-medium transition-all flex items-center gap-1 whitespace-nowrap cursor-pointer",
+                      activeOnly
+                        ? "bg-emerald-600 text-white font-bold shadow-xs"
+                        : "text-muted-foreground hover:text-emerald-600"
+                    )}
+                  >
+                    <span className="size-1.5 rounded-full bg-emerald-400" />
+                    {isAr ? 'الفعال فقط' : 'Active Only'}
+                  </button>
+                </div>
+
+                {/* Module Filter Dropdown */}
+                <Select
+                  value={selectedModule}
+                  onValueChange={(v) => {
+                    setSelectedModule(v)
                     setPage(1)
                   }}
-                  className="ps-9 h-9 text-xs"
-                />
+                  dir={isAr ? 'rtl' : 'ltr'}
+                >
+                  <SelectTrigger className="h-8 min-w-[130px] max-w-[170px] text-xs bg-background shrink-0" dir={isAr ? 'rtl' : 'ltr'}>
+                    <SelectValue placeholder={isAr ? 'جميع الوحدات' : 'All Modules'} />
+                  </SelectTrigger>
+                  <SelectContent dir={isAr ? 'rtl' : 'ltr'}>
+                    <SelectItem value="ALL">{isAr ? 'جميع الوحدات (الكل)' : 'All Modules'}</SelectItem>
+                    <SelectItem value="FIN">{isAr ? 'الحسابات والمالية (FIN)' : 'Financial (FIN)'}</SelectItem>
+                    <SelectItem value="SAL">{isAr ? 'المبيعات (SAL)' : 'Sales (SAL)'}</SelectItem>
+                    <SelectItem value="PUR">{isAr ? 'المشتريات (PUR)' : 'Purchases (PUR)'}</SelectItem>
+                    <SelectItem value="INV">{isAr ? 'المخازن والمستودعات (INV)' : 'Inventory (INV)'}</SelectItem>
+                    <SelectItem value="POS">{isAr ? 'نقاط البيع (POS)' : 'Point of Sale (POS)'}</SelectItem>
+                    <SelectItem value="HR">{isAr ? 'الموارد البشرية (HR)' : 'Human Resources (HR)'}</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              {/* Module Filter */}
-              <select
-                value={selectedModule}
-                onChange={(e) => {
-                  setSelectedModule(e.target.value)
-                  setPage(1)
-                }}
-                className="h-9 px-2.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md"
-              >
-                <option value="ALL">{isAr ? 'جميع الوحدات (الكل)' : 'All Modules'}</option>
-                <option value="FIN">{isAr ? 'الحسابات والمالية (FIN)' : 'Financial'}</option>
-                <option value="SAL">{isAr ? 'المبيعات (SAL)' : 'Sales'}</option>
-                <option value="PUR">{isAr ? 'المشتريات (PUR)' : 'Purchases'}</option>
-                <option value="INV">{isAr ? 'المخازن والمستودعات (INV)' : 'Inventory'}</option>
-                <option value="POS">{isAr ? 'نقاط البيع (POS)' : 'Point of Sale'}</option>
-                <option value="HR">{isAr ? 'الموارد البشرية (HR)' : 'Human Resources'}</option>
-              </select>
+            {/* Row 3 on mobile (Right Group on Desktop): Action Tools & Add Sequence Button */}
+            <div className="flex items-center justify-between sm:justify-start gap-1.5 w-full lg:w-auto pt-1 sm:pt-0 border-t lg:border-t-0 border-slate-200/60 dark:border-slate-800">
+              {/* Action Tool Icons */}
+              <div className="flex items-center gap-1 mx-1">
+                {/* Export Dropdown */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer"
+                      title={isAr ? 'خيارات التصدير (Excel, CSV, Word, PDF)' : 'Export Options (Excel, CSV, Word, PDF)'}
+                    >
+                      <FileSpreadsheet className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align={isAr ? 'start' : 'end'} sideOffset={6} className="w-36 shadow-xl border-slate-200 dark:border-slate-800 z-50">
+                    <DropdownMenuItem onClick={handleExportExcel} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                      <FileSpreadsheet className="size-4 text-emerald-600 shrink-0" />
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{isAr ? 'Excel' : 'Excel'}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleExportCSV} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                      <Columns className="size-4 text-blue-600 shrink-0" />
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{isAr ? 'CSV' : 'CSV'}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleExportWord} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                      <FileText className="size-4 text-indigo-600 shrink-0" />
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{isAr ? 'Word' : 'Word'}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleExportPDF} className="gap-2.5 text-xs font-medium cursor-pointer py-2">
+                      <Printer className="size-4 text-red-600 shrink-0" />
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{isAr ? 'PDF / طباعة' : 'PDF / Print'}</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
 
-              {/* Active Toggle Filter */}
-              <div className="flex items-center gap-1.5 border border-slate-200 dark:border-slate-700 px-2 py-1 rounded-md bg-slate-50 dark:bg-slate-800">
-                <Label htmlFor="active-filter" className="text-xs cursor-pointer text-slate-600 dark:text-slate-300">
-                  {isAr ? 'الفعال فقط' : 'Active Only'}
-                </Label>
-                <Switch
-                  id="active-filter"
-                  checked={activeOnly}
-                  onCheckedChange={(val) => {
-                    setActiveOnly(val)
-                    setPage(1)
+                {/* Print */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 text-orange-600 hover:bg-orange-50 dark:hover:bg-orange-950/40 cursor-pointer"
+                  onClick={handleExportPDF}
+                  title={isAr ? 'طباعة الجدول' : 'Print Table'}
+                >
+                  <Printer className="size-4" />
+                </Button>
+
+                {/* Refresh */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer"
+                  onClick={fetchData}
+                  title={isAr ? 'تحديث البيانات' : 'Refresh Data'}
+                >
+                  <RotateCw className={cn("size-4", loading && "animate-spin")} />
+                </Button>
+
+                {/* Active / Inactive status toggle for selected sequence */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!selectedItem}
+                  className={cn(
+                    "h-8 w-8 p-0 transition-all",
+                    selectedItem
+                      ? "text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 shadow-xs hover:scale-105 cursor-pointer"
+                      : "text-slate-400 opacity-40 cursor-not-allowed"
+                  )}
+                  onClick={() => {
+                    if (selectedItem) handleToggleStatus(selectedItem)
                   }}
-                />
+                  title={
+                    selectedItem
+                      ? selectedItem.active
+                        ? isAr ? 'تعطيل التسلسل المحدد' : 'Deactivate selected'
+                        : isAr ? 'تفعيل التسلسل المحدد' : 'Activate selected'
+                      : isAr ? 'اختر تسلسلاً من الجدول لتغيير حالته' : 'Select a sequence to toggle status'
+                  }
+                >
+                  <Lock className="size-4" />
+                </Button>
+
+                {/* Edit selected sequence */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!selectedItem}
+                  className={cn(
+                    "h-8 w-8 p-0 transition-all",
+                    selectedItem
+                      ? "text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40 shadow-xs hover:scale-105 cursor-pointer"
+                      : "text-amber-300 opacity-40 cursor-not-allowed"
+                  )}
+                  onClick={() => {
+                    if (selectedItem) {
+                      const idx = items.findIndex((it) => it.id === selectedItem.id)
+                      openEditForm(selectedItem, idx >= 0 ? idx : 0)
+                    }
+                  }}
+                  title={
+                    selectedItem
+                      ? isAr ? 'تعديل التسلسل المحدد' : 'Edit selected sequence'
+                      : isAr ? 'اختر تسلسلاً من الجدول للتعديل' : 'Select a sequence to edit'
+                  }
+                >
+                  <Edit2 className="size-4" />
+                </Button>
+
+                {/* Delete selected sequence */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!selectedItem || selectedItem.isUsed}
+                  className={cn(
+                    "h-8 w-8 p-0 transition-all",
+                    selectedItem && !selectedItem.isUsed
+                      ? "text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 shadow-xs hover:scale-105 cursor-pointer"
+                      : "text-rose-300 opacity-40 cursor-not-allowed"
+                  )}
+                  onClick={() => {
+                    if (selectedItem && !selectedItem.isUsed) promptDelete(selectedItem)
+                  }}
+                  title={
+                    selectedItem
+                      ? selectedItem.isUsed
+                        ? isAr ? 'ممنوع الحذف لتسلسل مستخدم' : 'Cannot delete used sequence'
+                        : isAr ? 'حذف التسلسل المحدد' : 'Delete selected sequence'
+                      : isAr ? 'اختر تسلسلاً من الجدول للحذف' : 'Select a sequence to delete'
+                  }
+                >
+                  <Trash2 className="size-4" />
+                </Button>
               </div>
 
-              {/* Column Chooser */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-9 text-xs gap-1.5">
-                    <SlidersHorizontal className="w-3.5 h-3.5" />
-                    {isAr ? 'أعمدة' : 'Columns'}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align={isAr ? 'start' : 'end'} className="w-48 text-xs">
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.docTypeCode}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, docTypeCode: val })}
-                  >
-                    {isAr ? 'نوع وثيقة التسلسل' : 'Doc Type Code'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.nameAr}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, nameAr: val })}
-                  >
-                    {isAr ? 'النوع' : 'Type'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.sequenceNumber}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, sequenceNumber: val })}
-                  >
-                    {isAr ? 'التسلسل' : 'Sequence'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.dateDisplayMode}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, dateDisplayMode: val })}
-                  >
-                    {isAr ? 'طريقة عرض التاريخ' : 'Date Display Mode'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.active}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, active: val })}
-                  >
-                    {isAr ? 'فعال' : 'Active'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.initialValue}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, initialValue: val })}
-                  >
-                    {isAr ? 'القيمة الأولية' : 'Initial Value'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.numberLength}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, numberLength: val })}
-                  >
-                    {isAr ? 'طول رقم الوثيقة' : 'Number Length'}
-                  </DropdownMenuCheckboxItem>
-                  <DropdownMenuCheckboxItem
-                    checked={visibleColumns.entryStartDate}
-                    onCheckedChange={(val) => setVisibleColumns({ ...visibleColumns, entryStartDate: val })}
-                  >
-                    {isAr ? 'تاريخ بدء الإدخال' : 'Entry Start Date'}
-                  </DropdownMenuCheckboxItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              {/* Action Buttons matching icons in Screenshot 1 */}
-              <Button variant="outline" size="sm" onClick={() => window.print()} title={isAr ? 'طباعة' : 'Print'} className="h-9 w-9 p-0">
-                <Printer className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />
-              </Button>
-              <Button variant="outline" size="sm" onClick={fetchData} title={isAr ? 'تحديث' : 'Refresh'} className="h-9 w-9 p-0">
-                <RefreshCw className={`w-3.5 h-3.5 text-slate-600 dark:text-slate-300 ${loading ? 'animate-spin' : ''}`} />
-              </Button>
-
               {/* Add Sequence Button */}
-              <Button onClick={openCreateForm} size="sm" className="h-9 bg-primary hover:bg-primary/90 text-white text-xs gap-1 px-3 shadow">
-                <Plus className="w-4 h-4" />
-                {isAr ? 'إضافة' : 'Add '}
+              <Button
+                onClick={openCreateForm}
+                size="sm"
+                className="h-8 bg-primary hover:bg-primary/90 text-white text-xs gap-1.5 px-3 shadow-xs font-bold shrink-0"
+              >
+                <Plus className="size-3.5" />
+                <span>{isAr ? 'إضافة' : 'Add'}</span>
               </Button>
             </div>
           </div>
 
-          {/* DataGrid Table matching Screenshot 1, 2, 3, 4 */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
-            <div className="overflow-x-auto flex-1">
-              <table className="w-full text-xs text-start border-collapse">
-                <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 select-none">
-                  <tr>
-                    {visibleColumns.docTypeCode && (
-                      <th className="py-2.5 px-3 text-start font-semibold whitespace-nowrap">
-                        {isAr ? 'نوع وثيقة التسلسل' : 'Doc Type Code'}
-                      </th>
-                    )}
-                    {visibleColumns.nameAr && (
-                      <th className="py-2.5 px-3 text-start font-semibold whitespace-nowrap">
-                        {isAr ? ' النوع' : 'Type'}
-                      </th>
-                    )}
-                    {visibleColumns.sequenceNumber && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'التسلسل' : 'Seq'}
-                      </th>
-                    )}
-                    {visibleColumns.dateDisplayMode && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'طريقة عرض التاريخ ' : 'Date Mode'}
-                      </th>
-                    )}
-                    {visibleColumns.active && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'فعال' : 'Active'}
-                      </th>
-                    )}
-                    {visibleColumns.initialValue && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'القيمة الإبتدائية...' : 'Initial Value'}
-                      </th>
-                    )}
-                    {visibleColumns.numberLength && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'طول رقم الوثيقة' : 'Length'}
-                      </th>
-                    )}
-                    {visibleColumns.createdById && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'مدخل البيانات' : 'Created By'}
-                      </th>
-                    )}
-                    {visibleColumns.entryStartDate && (
-                      <th className="py-2.5 px-3 text-start font-semibold whitespace-nowrap">
-                        {isAr ? 'تاريخ بدء الإدخال' : 'Start Date'}
-                      </th>
-                    )}
-                    {visibleColumns.actions && (
-                      <th className="py-2.5 px-3 text-center font-semibold whitespace-nowrap">
-                        {isAr ? 'الإجراءات' : 'Actions'}
-                      </th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {loading && items.length === 0 ? (
-                    <tr>
-                      <td colSpan={10} className="text-center py-12 text-slate-500">
-                        <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-primary" />
-                        {isAr ? 'جاري تحميل تسلسلات العمليات...' : 'Loading transaction sequences...'}
-                      </td>
-                    </tr>
-                  ) : items.length === 0 ? (
-                    <tr>
-                      <td colSpan={10} className="text-center py-12 text-slate-400">
-                        <Layers className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                        <p className="font-semibold text-sm">{isAr ? 'لا توجد تسلسلات عمليات' : 'No transaction sequences found'}</p>
-                        <p className="text-xs text-slate-500 mt-1">
-                          {isAr ? 'اضغط على "تهيئة التسلسلات القياسية" للبدء سريعاً' : 'Click "Init Standard Sequences" to start quickly'}
-                        </p>
-                      </td>
-                    </tr>
-                  ) : (
-                    items.map((item, index) => (
-                      <tr
+          {/* MAIN GRID TABLE WITH HORIZONTAL SCROLLBAR */}
+          <div className="overflow-x-auto min-h-[380px] w-full flex-1 scrollbar-thin">
+            <Table className="min-w-[1090px] border-collapse text-[11px] table-fixed w-full">
+              <TableHeader className="bg-slate-100/90 dark:bg-slate-900 border-b">
+                <TableRow className="h-8 hover:bg-transparent text-slate-700 dark:text-slate-200">
+                  {visibleColumns.docTypeCode && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.docTypeCode || 140}px`,
+                        minWidth: `${colWidths.docTypeCode || 140}px`,
+                        maxWidth: `${colWidths.docTypeCode || 140}px`,
+                      }}
+                      className={cn(
+                        'font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap relative select-none group',
+                        isAr ? 'text-right' : 'text-left'
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="truncate">{isAr ? 'نوع وثيقة التسلسل' : 'Doc Type Code'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('docTypeCode', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, docTypeCode: DEFAULT_COL_WIDTHS.docTypeCode }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.nameAr && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.nameAr || 180}px`,
+                        minWidth: `${colWidths.nameAr || 180}px`,
+                        maxWidth: `${colWidths.nameAr || 180}px`,
+                      }}
+                      className={cn(
+                        'font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap relative select-none group',
+                        isAr ? 'text-right' : 'text-left'
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="truncate">{isAr ? 'النوع / الاسم' : 'Type / Name'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('nameAr', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, nameAr: DEFAULT_COL_WIDTHS.nameAr }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.sequenceNumber && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.sequenceNumber || 85}px`,
+                        minWidth: `${colWidths.sequenceNumber || 85}px`,
+                        maxWidth: `${colWidths.sequenceNumber || 85}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{isAr ? 'التسلسل' : 'Seq'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('sequenceNumber', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, sequenceNumber: DEFAULT_COL_WIDTHS.sequenceNumber }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.dateDisplayMode && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.dateDisplayMode || 120}px`,
+                        minWidth: `${colWidths.dateDisplayMode || 120}px`,
+                        maxWidth: `${colWidths.dateDisplayMode || 120}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{isAr ? 'طريقة عرض التاريخ' : 'Date Mode'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('dateDisplayMode', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, dateDisplayMode: DEFAULT_COL_WIDTHS.dateDisplayMode }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.active && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.active || 85}px`,
+                        minWidth: `${colWidths.active || 85}px`,
+                        maxWidth: `${colWidths.active || 85}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{isAr ? 'الحالة' : 'Status'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('active', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, active: DEFAULT_COL_WIDTHS.active }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.initialValue && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.initialValue || 110}px`,
+                        minWidth: `${colWidths.initialValue || 110}px`,
+                        maxWidth: `${colWidths.initialValue || 110}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{isAr ? 'القيمة الابتدائية' : 'Initial Val'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('initialValue', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, initialValue: DEFAULT_COL_WIDTHS.initialValue }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.numberLength && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.numberLength || 110}px`,
+                        minWidth: `${colWidths.numberLength || 110}px`,
+                        maxWidth: `${colWidths.numberLength || 110}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{isAr ? 'طول الرقم' : 'Length'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('numberLength', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, numberLength: DEFAULT_COL_WIDTHS.numberLength }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.createdById && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.createdById || 100}px`,
+                        minWidth: `${colWidths.createdById || 100}px`,
+                        maxWidth: `${colWidths.createdById || 100}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 text-center whitespace-nowrap relative select-none group"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{isAr ? 'مدخل البيانات' : 'Created By'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('createdById', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, createdById: DEFAULT_COL_WIDTHS.createdById }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.entryStartDate && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.entryStartDate || 150}px`,
+                        minWidth: `${colWidths.entryStartDate || 150}px`,
+                        maxWidth: `${colWidths.entryStartDate || 150}px`,
+                      }}
+                      className={cn(
+                        'font-bold py-1.5 px-2 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap relative select-none group',
+                        isAr ? 'text-right' : 'text-left'
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span>{isAr ? 'تاريخ بدء الإدخال' : 'Start Date'}</span>
+                      </div>
+                      <div
+                        onMouseDown={(e) => handleResizeStart('entryStartDate', e)}
+                        onDoubleClick={() => setColWidths((p) => ({ ...p, entryStartDate: DEFAULT_COL_WIDTHS.entryStartDate }))}
+                        className={cn(
+                          "absolute top-0 bottom-0 w-3 z-30 cursor-col-resize hover:bg-blue-500/80 transition-colors flex items-center justify-center group/handle",
+                          isAr ? "-left-1.5" : "-right-1.5",
+                          "bg-transparent"
+                        )}
+                        title={isAr ? 'سحب لتغيير عرض العمود (انقر مرتين للإعادة)' : 'Drag to resize column (Double click to reset)'}
+                      >
+                        <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
+                      </div>
+                    </TableHead>
+                  )}
+
+                  {visibleColumns.actions && (
+                    <TableHead
+                      style={{
+                        width: `${colWidths.actions || 110}px`,
+                        minWidth: `${colWidths.actions || 110}px`,
+                        maxWidth: `${colWidths.actions || 110}px`,
+                      }}
+                      className="font-bold py-1.5 px-2 text-center whitespace-nowrap select-none"
+                    >
+                      <span>{isAr ? 'إجراءات سريعة' : 'Quick Actions'}</span>
+                    </TableHead>
+                  )}
+                </TableRow>
+              </TableHeader>
+
+              <TableBody>
+                {loading && items.length === 0 ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <TableRow key={i} className="h-8 border-b border-slate-200 dark:border-slate-700">
+                      {Array.from({ length: Object.values(visibleColumns).filter(Boolean).length }).map((_, j) => (
+                        <TableCell key={j} className="py-1 px-2 border-r border-slate-100 dark:border-slate-800">
+                          <Skeleton className="h-4 w-full" />
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))
+                ) : items.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={10} className="text-center text-muted-foreground py-12">
+                      <Layers className="size-8 mx-auto mb-2 opacity-40" />
+                      <p className="font-semibold text-sm">{isAr ? 'لا توجد تسلسلات عمليات' : 'No transaction sequences found'}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {isAr ? 'اضغط على "تهيئة التسلسلات القياسية" للبدء سريعاً' : 'Click "Init Standard Sequences" to start quickly'}
+                      </p>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  items.map((item, index) => {
+                    const isSelected = selectedId === item.id
+
+                    return (
+                      <TableRow
                         key={item.id}
-                        className={`hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer ${!item.active ? 'opacity-60 bg-slate-50/50 dark:bg-slate-900/40' : ''
-                          }`}
+                        data-selected={isSelected || undefined}
+                        onClick={() => setSelectedId(item.id)}
                         onDoubleClick={() => openEditForm(item, index)}
+                        className={cn(
+                          "h-8 select-none cursor-pointer border-b border-slate-200 dark:border-slate-700 transition-colors",
+                          isSelected
+                            ? "!bg-[#d0e2f7] dark:!bg-[#1e3a5f] !border-l-[3px] !border-l-blue-600 dark:!border-l-blue-400"
+                            : "bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-900/60",
+                          !item.active && !isSelected && "opacity-75 bg-slate-50/50 dark:bg-slate-900/40"
+                        )}
+                        style={isSelected ? { backgroundColor: '#a0ccff50' } : undefined}
                       >
                         {visibleColumns.docTypeCode && (
-                          <td className="py-2 px-3 font-mono font-bold text-primary">
-                            {item.sequenceDocType?.code || '-'}
-                          </td>
+                          <TableCell
+                            style={{
+                              width: `${colWidths.docTypeCode || 140}px`,
+                              minWidth: `${colWidths.docTypeCode || 140}px`,
+                              maxWidth: `${colWidths.docTypeCode || 140}px`,
+                            }}
+                            className="font-semibold text-primary font-mono border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
+                            <span className="truncate block w-full cursor-default" title={item.sequenceDocType?.code || '-'}>
+                              {item.sequenceDocType?.code || '-'}
+                            </span>
+                          </TableCell>
                         )}
+
                         {visibleColumns.nameAr && (
-                          <td className="py-2 px-3 font-medium">
-                            <div className="flex items-center gap-1.5">
-                              <span>{isAr ? item.nameAr : item.nameEn || item.nameAr}</span>
+                          <TableCell
+                            style={{
+                              width: `${colWidths.nameAr || 180}px`,
+                              minWidth: `${colWidths.nameAr || 180}px`,
+                              maxWidth: `${colWidths.nameAr || 180}px`,
+                            }}
+                            className="font-medium text-foreground border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
+                            <div className="flex items-center gap-1.5 truncate">
+                              <span className="truncate block w-full cursor-default" title={isAr ? item.nameAr : item.nameEn || item.nameAr}>
+                                {isAr ? item.nameAr : item.nameEn || item.nameAr}
+                              </span>
                               {item.isUsed && (
-                                <span title={isAr ? `تسلسل مستخدم (${item.totalIssued} وثيقة صادرة)` : `Used sequence (${item.totalIssued} issued)`}>
-                                  <Lock className="w-3 h-3 text-amber-500" />
+                                <span title={isAr ? `تسلسل مستخدم (${item.totalIssued || 0} وثيقة صادرة)` : `Used sequence (${item.totalIssued || 0} issued)`}>
+                                  <Lock className="size-3 text-amber-500 shrink-0" />
                                 </span>
                               )}
                             </div>
-                          </td>
+                          </TableCell>
                         )}
+
                         {visibleColumns.sequenceNumber && (
-                          <td className="py-2 px-3 text-center font-bold">
+                          <TableCell
+                            style={{
+                              width: `${colWidths.sequenceNumber || 85}px`,
+                              minWidth: `${colWidths.sequenceNumber || 85}px`,
+                              maxWidth: `${colWidths.sequenceNumber || 85}px`,
+                            }}
+                            className="text-center font-bold font-mono text-slate-800 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
                             {item.sequenceNumber}
-                          </td>
+                          </TableCell>
                         )}
+
                         {visibleColumns.dateDisplayMode && (
-                          <td className="py-2 px-3 text-center">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold ${item.dateDisplayMode === 'automatic'
-                                ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
-                                : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                                }`}
-                            >
-                              {item.dateDisplayMode === 'automatic' ? (isAr ? 'آلي' : 'Auto') : (isAr ? 'يدوي' : 'Manual')}
-                            </span>
-                          </td>
-                        )}
-                        {visibleColumns.active && (
-                          <td className="py-2 px-3 text-center">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleToggleStatus(item)
-                              }}
-                              className="focus:outline-none"
-                            >
-                              {item.active ? (
-                                <Check className="w-4 h-4 mx-auto text-emerald-600 font-bold" />
+                          <TableCell
+                            style={{
+                              width: `${colWidths.dateDisplayMode || 120}px`,
+                              minWidth: `${colWidths.dateDisplayMode || 120}px`,
+                              maxWidth: `${colWidths.dateDisplayMode || 120}px`,
+                            }}
+                            className="text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
+                            <div className="flex items-center justify-center">
+                              {item.dateDisplayMode === 'automatic' ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800">
+                                  <span className="size-1.5 rounded-full bg-blue-500" />
+                                  {isAr ? 'آلي' : 'Auto'}
+                                </span>
                               ) : (
-                                <X className="w-4 h-4 mx-auto text-slate-400" />
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
+                                  <span className="size-1.5 rounded-full bg-amber-500" />
+                                  {isAr ? 'يدوي' : 'Manual'}
+                                </span>
                               )}
-                            </button>
-                          </td>
+                            </div>
+                          </TableCell>
                         )}
+
+                        {visibleColumns.active && (
+                          <TableCell
+                            style={{
+                              width: `${colWidths.active || 85}px`,
+                              minWidth: `${colWidths.active || 85}px`,
+                              maxWidth: `${colWidths.active || 85}px`,
+                            }}
+                            className="text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
+                            <div className="flex items-center justify-center">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleToggleStatus(item)
+                                }}
+                                className="cursor-pointer focus:outline-none"
+                                title={isAr ? 'انقر لتغيير الحالة' : 'Click to toggle status'}
+                              >
+                                {item.active ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors">
+                                    <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    {isAr ? 'فعال' : 'Active'}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-750 transition-colors">
+                                    <span className="size-1.5 rounded-full bg-slate-400" />
+                                    {isAr ? 'معطل' : 'Inactive'}
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          </TableCell>
+                        )}
+
                         {visibleColumns.initialValue && (
-                          <td className="py-2 px-3 text-center font-mono">
+                          <TableCell
+                            style={{
+                              width: `${colWidths.initialValue || 110}px`,
+                              minWidth: `${colWidths.initialValue || 110}px`,
+                              maxWidth: `${colWidths.initialValue || 110}px`,
+                            }}
+                            className="text-center font-mono text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
                             {item.initialValue}
-                          </td>
+                          </TableCell>
                         )}
+
                         {visibleColumns.numberLength && (
-                          <td className="py-2 px-3 text-center font-mono">
+                          <TableCell
+                            style={{
+                              width: `${colWidths.numberLength || 110}px`,
+                              minWidth: `${colWidths.numberLength || 110}px`,
+                              maxWidth: `${colWidths.numberLength || 110}px`,
+                            }}
+                            className="text-center font-mono text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
                             {item.numberLength || '-'}
-                          </td>
+                          </TableCell>
                         )}
+
                         {visibleColumns.createdById && (
-                          <td className="py-2 px-3 text-center text-slate-500">
-                            1
-                          </td>
+                          <TableCell
+                            style={{
+                              width: `${colWidths.createdById || 100}px`,
+                              minWidth: `${colWidths.createdById || 100}px`,
+                              maxWidth: `${colWidths.createdById || 100}px`,
+                            }}
+                            className="text-center text-slate-500 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden font-mono text-[11px]"
+                          >
+                            <span className="truncate block w-full">{item.createdById || '1'}</span>
+                          </TableCell>
                         )}
+
                         {visibleColumns.entryStartDate && (
-                          <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">
-                            {new Date(item.entryStartDate || item.createdAt).toLocaleDateString(isAr ? 'ar-EG' : 'en-US', {
-                              year: 'numeric',
-                              month: '2-digit',
-                              day: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              second: '2-digit',
-                            })}
-                          </td>
+                          <TableCell
+                            style={{
+                              width: `${colWidths.entryStartDate || 150}px`,
+                              minWidth: `${colWidths.entryStartDate || 150}px`,
+                              maxWidth: `${colWidths.entryStartDate || 150}px`,
+                            }}
+                            className="font-mono text-slate-600 dark:text-slate-400 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          >
+                            <span
+                              className="truncate block w-full cursor-default"
+                              title={item.entryStartDate ? new Date(item.entryStartDate).toLocaleString(isAr ? 'ar-EG' : 'en-US') : '-'}
+                            >
+                              {item.entryStartDate
+                                ? new Date(item.entryStartDate).toLocaleDateString(isAr ? 'ar-EG' : 'en-US', {
+                                    year: 'numeric',
+                                    month: '2-digit',
+                                    day: '2-digit',
+                                  })
+                                : '-'}
+                            </span>
+                          </TableCell>
                         )}
+
                         {visibleColumns.actions && (
-                          <td className="py-2 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <TableCell
+                            style={{
+                              width: `${colWidths.actions || 110}px`,
+                              minWidth: `${colWidths.actions || 110}px`,
+                              maxWidth: `${colWidths.actions || 110}px`,
+                            }}
+                            className="py-1 px-2 overflow-hidden text-center"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <div className="flex items-center justify-center gap-1">
                               <Button
                                 variant="ghost"
-                                size="sm"
-                                className="h-7 w-7 p-0 text-slate-600 hover:text-primary"
+                                size="icon"
+                                className="size-6 p-0 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer"
                                 onClick={() => openEditForm(item, index)}
                                 title={isAr ? 'تعديل' : 'Edit'}
                               >
-                                <Edit2 className="w-3.5 h-3.5" />
+                                <Edit2 className="size-3" />
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="sm"
-                                className={`h-7 w-7 p-0 ${item.isUsed
-                                  ? 'text-slate-300 dark:text-slate-700 cursor-not-allowed'
-                                  : 'text-rose-500 hover:text-rose-700'
-                                  }`}
-                                onClick={() => promptDelete(item)}
+                                size="icon"
+                                className={cn(
+                                  "size-6 p-0",
+                                  item.isUsed
+                                    ? "text-slate-300 dark:text-slate-700 cursor-not-allowed"
+                                    : "text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                                )}
+                                onClick={() => !item.isUsed && promptDelete(item)}
                                 disabled={item.isUsed}
                                 title={
                                   item.isUsed
@@ -884,84 +1607,102 @@ export function TransactionSequencesModule() {
                                       : 'Delete'
                                 }
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Trash2 className="size-3" />
                               </Button>
                             </div>
-                          </td>
+                          </TableCell>
                         )}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                      </TableRow>
+                    )
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
 
-            {/* Pagination Footer matching Screenshot 1 */}
-            <div className="bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-4 py-2 flex flex-wrap items-center justify-between text-xs text-slate-600 dark:text-slate-300 gap-3">
-              <div>
+          {/* PAGINATION FOOTER (Exact replica of fiscal-periods-module.tsx) */}
+          <div className="p-2.5 bg-slate-100/90 dark:bg-slate-900 border-t flex flex-wrap items-center justify-between gap-3 text-xs text-slate-700 dark:text-slate-300">
+            <div className="flex items-center gap-2">
+              <span>
                 {isAr
                   ? `صفحة ${page} من ${Math.max(1, Math.ceil(totalItems / pageSize))} (إجمالي العناصر ${totalItems})`
-                  : `Page ${page} of ${Math.max(1, Math.ceil(totalItems / pageSize))} (${totalItems} items total)`}
-              </div>
+                  : `Page ${page} of ${Math.max(1, Math.ceil(totalItems / pageSize))} (${totalItems} items)`}
+              </span>
+            </div>
 
-              <div className="flex items-center gap-2">
-                <span>{isAr ? 'العناصر في كل صفحة:' : 'Items per page:'}</span>
-                <select
-                  value={pageSize}
-                  onChange={(e) => {
-                    setPageSize(Number(e.target.value))
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground">{isAr ? 'العناصر' : 'Items'}</span>
+                <Select
+                  value={pageSize.toString()}
+                  onValueChange={(val) => {
+                    setPageSize(Number(val))
                     setPage(1)
                   }}
-                  className="h-7 px-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded text-xs"
                 >
-                  <option value={20}>20</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
+                  <SelectTrigger className="h-7 w-16 text-xs bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="10">10</SelectItem>
+                    <SelectItem value="20">20</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-                <div className="flex items-center gap-1 ms-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setPage(1)}
-                    disabled={page <= 1}
-                  >
-                    <ChevronsRight className={`w-3.5 h-3.5 ${isAr ? '' : 'rotate-180'}`} />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page <= 1}
-                  >
-                    <ChevronRight className={`w-3.5 h-3.5 ${isAr ? '' : 'rotate-180'}`} />
-                  </Button>
-                  <span className="px-2 font-mono font-bold">{page}</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setPage((p) => p + 1)}
-                    disabled={page >= Math.ceil(totalItems / pageSize)}
-                  >
-                    <ChevronLeft className={`w-3.5 h-3.5 ${isAr ? '' : 'rotate-180'}`} />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
-                    onClick={() => setPage(Math.ceil(totalItems / pageSize))}
-                    disabled={page >= Math.ceil(totalItems / pageSize)}
-                  >
-                    <ChevronsLeft className={`w-3.5 h-3.5 ${isAr ? '' : 'rotate-180'}`} />
-                  </Button>
-                </div>
+              <div className="flex items-center gap-1 dir-ltr">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(1)}
+                  disabled={page <= 1}
+                  className="h-7 w-7 p-0 bg-background"
+                  title={isAr ? 'الصفحة الأولى' : 'First Page'}
+                >
+                  <ChevronsLeft className="size-3.5" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="h-7 w-7 p-0 bg-background"
+                  title={isAr ? 'الصفحة السابقة' : 'Previous Page'}
+                >
+                  <ChevronLeft className="size-3.5" />
+                </Button>
+
+                <span className="h-7 min-w-[28px] px-2 flex items-center justify-center rounded-md bg-blue-600 text-white font-mono font-bold text-xs">
+                  {page}
+                </span>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.min(Math.max(1, Math.ceil(totalItems / pageSize)), p + 1))}
+                  disabled={page >= Math.max(1, Math.ceil(totalItems / pageSize))}
+                  className="h-7 w-7 p-0 bg-background"
+                  title={isAr ? 'الصفحة التالية' : 'Next Page'}
+                >
+                  <ChevronRight className="size-3.5" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(Math.max(1, Math.ceil(totalItems / pageSize)))}
+                  disabled={page >= Math.max(1, Math.ceil(totalItems / pageSize))}
+                  className="h-7 w-7 p-0 bg-background"
+                  title={isAr ? 'الصفحة الأخيرة' : 'Last Page'}
+                >
+                  <ChevronsRight className="size-3.5" />
+                </Button>
               </div>
             </div>
           </div>
-        </div>
+
+        </Card>
       )}
 
       {/* ========================================================================= */}
