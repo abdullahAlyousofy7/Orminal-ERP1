@@ -141,8 +141,13 @@ export async function getAuthContext(req?: Request): Promise<AuthContext | null>
   }
 
   if (!userId) {
-    const session = await getServerSession(authOptions)
-    userId = session?.user?.id
+    try {
+      const session = await getServerSession(authOptions)
+      userId = session?.user?.id
+    } catch {
+      // Non-request context or test runner without active Next.js headers context
+      userId = undefined
+    }
   }
 
   if (!userId) return null
@@ -156,6 +161,10 @@ export async function getAuthContext(req?: Request): Promise<AuthContext | null>
       active: true,
       defaultCompanyId: true,
       defaultBranchId: true,
+      validFromDate: true,
+      validToDate: true,
+      validFromTime: true,
+      validToTime: true,
       branches: { select: { id: true, companyId: true, active: true } },
       managedBranches: { select: { id: true, companyId: true, active: true } },
       userRoles: {
@@ -178,6 +187,19 @@ export async function getAuthContext(req?: Request): Promise<AuthContext | null>
   })
 
   if (!user || !user.active) return null
+
+  // Mandatory Security Constraint: User Access Window Enforcement
+  const now = new Date()
+  if (user.validFromDate && now < user.validFromDate) return null
+  if (user.validToDate && now > user.validToDate) return null
+
+  if (user.validFromTime || user.validToTime) {
+    const currentHours = now.getHours().toString().padStart(2, '0')
+    const currentMins = now.getMinutes().toString().padStart(2, '0')
+    const currentTimeStr = `${currentHours}:${currentMins}`
+    if (user.validFromTime && currentTimeStr < user.validFromTime) return null
+    if (user.validToTime && currentTimeStr > user.validToTime) return null
+  }
 
   const roleCodes = user.userRoles.map((ur) => ur.role.code.toUpperCase())
   const primaryRoleCode = roleCodes[0] || 'VIEWER'
@@ -392,7 +414,7 @@ export async function requireCapability(
       documentType: 'AUTH_CHECK',
       action: 'cancel',
       reason: `INSUFFICIENT_PERMISSION: ${capability} on ${action}`,
-    }).catch(() => {})
+    }).catch(() => { })
     return forbidden(`صلاحية غير كافية: العملية تتطلب ${capability} على ${action}`, 'INSUFFICIENT_PERMISSION')
   }
   return ctx
@@ -409,6 +431,8 @@ export async function requireAuthContext(
     action?: string
     resource?: string
     capability?: Cap
+    screenCode?: string
+    screenAction?: import('./screen-catalog').ScreenActionKey
   }
 ): Promise<AuthContext | NextResponse> {
   const ctx = await requireAuth(req)
@@ -425,12 +449,39 @@ export async function requireAuthContext(
         documentType: 'API_ACCESS',
         action: 'cancel',
         reason: `FORBIDDEN_API_CALL: ${options.capability} on ${target}`,
-      }).catch(() => {})
+      }).catch(() => { })
       return forbidden(`صلاحية غير كافية للوصول إلى هذه الوظيفة (${target})`, 'INSUFFICIENT_PERMISSION')
     }
   }
 
+  if (options?.screenCode && options?.screenAction) {
+    const screenAllowed = await checkScreenAction(ctx, options.screenCode, options.screenAction)
+    if (!screenAllowed) {
+      writeAudit({
+        userId: ctx.userId,
+        companyId: ctx.companyId,
+        moduleCode: 'SECURITY',
+        documentType: 'SCREEN_ACTION_ACCESS',
+        action: 'cancel',
+        reason: `FORBIDDEN_SCREEN_ACTION: ${options.screenAction} on screen ${options.screenCode}`,
+      }).catch(() => { })
+      return forbidden(`غير مصرح لك بتنفيذ الإجراء (${options.screenAction}) على الشاشة (${options.screenCode})`, 'INSUFFICIENT_SCREEN_ACTION')
+    }
+  }
+
   return ctx
+}
+
+/**
+ * Direct Screen Action Authorization Guard:
+ * Strictly enforces that the caller has explicit permission for the requested action on the screen.
+ */
+export async function requireScreenAction(
+  req: Request,
+  screenCode: string,
+  action: import('./screen-catalog').ScreenActionKey
+): Promise<AuthContext | NextResponse> {
+  return requireAuthContext(req, { screenCode, screenAction: action })
 }
 
 export interface TenantFkRefs {
@@ -591,7 +642,7 @@ export async function verifyTenantForeignKeys(
         documentType: 'FK_INTEGRITY',
         action: 'cancel',
         reason: `TENANT_FK_INTEGRITY_VIOLATION: ${checkNames[i]} does not belong to authorized company ${ctx.companyId}`,
-      }).catch(() => {})
+      }).catch(() => { })
 
       return {
         valid: false,
@@ -649,7 +700,7 @@ export function assertTenantRecord<T extends { id?: string; companyId?: string |
       documentId: record.id,
       action: 'cancel',
       reason: `IDOR attempt: Record companyId (${record.companyId}) != user companyId (${ctx.companyId})`,
-    }).catch(() => {})
+    }).catch(() => { })
     return false
   }
   return true
@@ -680,5 +731,73 @@ export function sanitizeTenantPayload<T extends Record<string, any>>(
     createdBy: ctx.userId,
     branchId,
   }
+}
+
+/**
+ * Checks if user is permitted to perform a specific screen action (13 actions).
+ */
+export async function checkScreenAction(
+  ctx: AuthContext,
+  screenCode: string,
+  action: import('./screen-catalog').ScreenActionKey
+): Promise<boolean> {
+  if (ctx.isSuperAdmin) return true
+  const { getEffectiveScreenPrivilege } = await import('./effective-permissions')
+  const decision = await getEffectiveScreenPrivilege(ctx.userId, ctx.companyId, screenCode)
+  return Boolean(decision.actions[action])
+}
+
+/**
+ * Checks effective transaction policy value for the current user.
+ */
+export async function checkTransactionPolicy<T = any>(
+  ctx: AuthContext,
+  policyKey: string
+): Promise<T> {
+  const { getEffectiveTransactionPolicy } = await import('./effective-permissions')
+  const res = await getEffectiveTransactionPolicy(ctx.userId, ctx.companyId, policyKey)
+  return res.value as T
+}
+
+/**
+ * Checks if user is permitted to access a specific master record (record-level scoping).
+ */
+export async function checkInputPrivilege(
+  ctx: AuthContext,
+  inputCode: string,
+  recordId: string,
+  flag: 'canScreen' | 'canReports' | 'canDownload' | 'canAccess' = 'canAccess'
+): Promise<boolean> {
+  if (ctx.isSuperAdmin) return true
+  const { getEffectiveInputPrivilege } = await import('./effective-permissions')
+  const decision = await getEffectiveInputPrivilege(ctx.userId, ctx.companyId, inputCode, recordId)
+  return Boolean(decision[flag])
+}
+
+/**
+ * Enforces record-level access guard for sensitive resources.
+ */
+export async function requireInputPrivilege(
+  req: Request,
+  inputCode: string,
+  recordId: string,
+  flag: 'canScreen' | 'canReports' | 'canDownload' | 'canAccess' = 'canAccess'
+): Promise<AuthContext | NextResponse> {
+  const ctx = await requireAuth(req)
+  if (isAuthFailure(ctx)) return ctx
+  const allowed = await checkInputPrivilege(ctx, inputCode, recordId, flag)
+  if (!allowed) {
+    writeAudit({
+      userId: ctx.userId,
+      companyId: ctx.companyId,
+      moduleCode: 'SECURITY',
+      documentType: 'INPUT_RECORD_ACCESS',
+      documentId: recordId,
+      action: 'cancel',
+      reason: `FORBIDDEN_RECORD_ACCESS: Flag ${flag} on input ${inputCode} record ${recordId}`,
+    }).catch(() => { })
+    return forbidden(`غير مصرح لك بالوصول إلى هذا السجل (${recordId}) في تصنيف المدخلات (${inputCode})`, 'INSUFFICIENT_RECORD_PRIVILEGE')
+  }
+  return ctx
 }
 

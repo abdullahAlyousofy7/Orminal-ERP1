@@ -187,8 +187,26 @@ model User {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
+  // SkeyERP & Enterprise Identity Additions
+  userCode             Int?      // Display serial number (e.g. 1, 2)
+  pinHash              String?   // Hashed POS PIN or secondary auth
+  employeeNumber       String?   // Display employee number
+  nationalId           String?   // National ID / personal identifier
+  managerId            String?   // Direct manager
+  validFromDate        DateTime? // Access window start date
+  validToDate          DateTime? // Access window end date
+  validFromTime        String?   // Access window start time (e.g. '08:00')
+  validToTime          String?   // Access window end time (e.g. '17:00')
+  defaultPriceLevel    String?   // Default pricing level
+  minPriceLimit        Decimal?  // Minimum price limit
+  maxPriceLimit        Decimal?  // Maximum price limit
+  passwordChangeCount  Int       @default(0)
+  lastPasswordChangeDate DateTime?
+
   defaultCompany          Company?          @relation(fields: [defaultCompanyId], references: [id])
   defaultBranch           Branch?           @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id])
+  manager                 User?             @relation("UserManager", fields: [managerId], references: [id])
+  subordinates            User[]            @relation("UserManager")
   employee                Employee?
   managedBranches         Branch[]          @relation("BranchManager")
   branches                Branch[]          @relation("BranchUsers")
@@ -197,6 +215,10 @@ model User {
   notifications           Notification[]
   outboxEvents            OutboxEvent[]
   approvals               ApprovalStep[]
+  screenPrivileges        ScreenPrivilege[]
+  inputPrivileges         InputPrivilege[]
+  transactionPolicies     TransactionPolicy[]
+  fieldPrivileges         FieldPrivilege[]
   // document ownership
   createdSalesOrders      SalesOrder[]      @relation("SalesOrderCreator")
   createdPurchaseOrders   PurchaseOrder[]   @relation("PurchaseOrderCreator")
@@ -205,6 +227,8 @@ model User {
 
   @@index([defaultCompanyId])
   @@index([defaultBranchId])
+  @@index([managerId])
+  @@index([userCode])
 }
 
 model Role {
@@ -218,9 +242,145 @@ model Role {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  userRoles       UserRole[]
-  rolePermissions RolePermission[]
+  // SkeyERP Additions & Role Inheritance
+  roleCode            Int?               // Display group number (e.g. 1, 2, 3)
+  isSuspended         Boolean            @default(false) // التوقيف
+  userRoles           UserRole[]
+  rolePermissions     RolePermission[]
+  inheritedRoles      RoleInheritance[]  @relation("RoleChildren")
+  parentRoles         RoleInheritance[]  @relation("RoleParents")
+  screenPrivileges    ScreenPrivilege[]
+  inputPrivileges     InputPrivilege[]
+  transactionPolicies TransactionPolicy[]
+  fieldPrivileges     FieldPrivilege[]
+
+  @@index([roleCode])
 }
+
+model RoleInheritance {
+  id           String   @id @default(cuid())
+  roleId       String   // Child role that inherits
+  parentRoleId String   // Parent role being inherited
+  createdAt    DateTime @default(now())
+
+  role       Role @relation("RoleChildren", fields: [roleId], references: [id], onDelete: Cascade)
+  parentRole Role @relation("RoleParents", fields: [parentRoleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, parentRoleId])
+  @@index([roleId])
+  @@index([parentRoleId])
+}
+
+model ScreenPrivilege {
+  id          String   @id @default(cuid())
+  companyId   String
+  roleId      String?
+  userId      String?
+  screenCode  String   // Technical screen code matching Excel catalog (e.g. '1', '22', '23')
+  screenTitle String?  // Display title
+
+  // 13 Screen Actions from Excel / SkeyERP
+  canInclude     Boolean @default(true)  // تضمين
+  canAdd         Boolean @default(false) // إضافة
+  canEdit        Boolean @default(false) // تعديل
+  canDelete      Boolean @default(false) // حذف
+  canView        Boolean @default(true)  // عرض
+  canPrint       Boolean @default(false) // طباعة
+  canCancelDoc   Boolean @default(false) // إلغاء الوثيقة
+  canPost        Boolean @default(false) // ترحيل
+  canSuspend     Boolean @default(false) // تعليق
+  canViewJournal Boolean @default(false) // عرض قيد اليومية
+  canScreenVars  Boolean @default(false) // متغيرات الشاشة
+  canReview      Boolean @default(false) // مراجعة
+  canStop        Boolean @default(false) // التوقيف
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  role Role? @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, roleId, screenCode])
+  @@index([companyId])
+  @@index([roleId])
+  @@index([userId])
+  @@index([screenCode])
+}
+
+model InputPrivilege {
+  id          String   @id @default(cuid())
+  companyId   String
+  roleId      String?
+  userId      String?
+  inputCode   String   // Input category code (e.g. '3', '6', '11')
+  recordId    String   // Specific record ID or key within input category
+  recordTitle String?  // Display title
+
+  // 4 Columns from SkeyERP Input Grid
+  canScreen   Boolean @default(true)  // الشاشة
+  canReports  Boolean @default(true)  // التقارير
+  canDownload Boolean @default(false) // إنزال من
+  canAccess   Boolean @default(true)  // صلاحية
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  role Role? @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, roleId, inputCode, recordId])
+  @@index([companyId])
+  @@index([roleId])
+  @@index([userId])
+  @@index([inputCode])
+}
+
+model TransactionPolicy {
+  id        String   @id @default(cuid())
+  companyId String
+  roleId    String?
+  userId    String?
+  policyKey String   // Matches one of the 37 TRANSACTION_POLICY_DEFINITIONS keys
+
+  boolValue Boolean?
+  numValue  Decimal?
+  strValue  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  role Role? @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, roleId, policyKey])
+  @@index([companyId])
+  @@index([roleId])
+  @@index([userId])
+  @@index([policyKey])
+}
+
+model FieldPrivilege {
+  id         String   @id @default(cuid())
+  companyId  String
+  roleId     String?
+  userId     String?
+  screenCode String
+  fieldKey   String   // Field name (e.g. 'costPrice', 'discountAmount')
+  mode       String   @default("VISIBLE") // VISIBLE | READONLY | EDITABLE | REQUIRED | HIDDEN
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  role Role? @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, roleId, screenCode, fieldKey])
+  @@index([companyId])
+  @@index([roleId])
+  @@index([userId])
+  @@index([screenCode])
+}
+
 
 model Permission {
   id            String   @id @default(cuid())

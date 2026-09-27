@@ -354,12 +354,12 @@ export function RolesModule() {
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl p-0 overflow-hidden bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800" dir={dir}>
+        <DialogContent className="max-w-4xl p-0 overflow-hidden bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800" dir={dir}>
           <form
             onSubmit={handleSubmit}
             className="flex flex-col max-h-[90vh] h-full overflow-hidden"
           >
-            <DialogHeader className="bg-gradient-to-r from-blue-50 to-[#E6F0FF] dark:bg-none dark:bg-blue-700/80 border-b border-blue-100 dark:border-blue-600/40 p-6 shrink-0 relative">
+            <DialogHeader>
               <div className="flex items-start gap-4">
                 <div className="size-12 rounded-xl bg-white dark:bg-blue-950/60 border border-blue-100 dark:border-blue-500/20 text-blue-600 dark:text-blue-300 flex items-center justify-center shadow-sm shadow-blue-100/40 dark:shadow-none shrink-0">
                   <Shield className="size-5" />
@@ -373,7 +373,7 @@ export function RolesModule() {
               </div>
             </DialogHeader>
 
-            <DialogBody className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50 dark:bg-slate-900/50 scrollbar-thin">
+            <DialogBody>
               {/* Role Information Section */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 border-b pb-2 border-slate-200/60 dark:border-slate-800/60">

@@ -150,7 +150,7 @@ function DialogBody({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-body"
-      className={cn("flex-1 overflow-y-auto px-6 py-4 bg-white dark:bg-slate-950", className)}
+      className={cn("flex-1 overflow-y-auto scrollbar-thin px-6 py-4 bg-white dark:bg-slate-950", className)}
       {...props}
     />
   )

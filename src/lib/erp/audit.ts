@@ -86,7 +86,28 @@ export async function writeAudit(input: AuditInput, tx?: { auditLog: { create: (
         correlationId: input.correlationId ?? null,
       },
     })
-  } catch (e) {
+  } catch (e: any) {
+    if (e?.code === 'P2003' && input.userId) {
+      try {
+        await client.auditLog.create({
+          data: {
+            userId: null,
+            companyId: input.companyId ?? null,
+            moduleCode: input.moduleCode,
+            documentType: input.documentType,
+            documentId: input.documentId ?? null,
+            action: input.action,
+            oldValue: serialize(input.oldValue),
+            newValue: serialize(input.newValue),
+            reason: input.reason ? `${input.reason} [unlinked-user: ${input.userId}]` : `[unlinked-user: ${input.userId}]`,
+            correlationId: input.correlationId ?? null,
+          },
+        })
+        return
+      } catch {
+        // Fall through to error log
+      }
+    }
     console.error('[audit] failed to write audit log', { moduleCode: input.moduleCode, action: input.action, error: e })
   }
 }

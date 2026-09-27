@@ -1,6 +1,13 @@
 import { db } from '@/lib/db'
 import { ok, created, list, badRequest, serverError, parsePagination, parseSearch } from '@/lib/erp/api-response'
-import { requireAuthContext, isAuthFailure, scopedWhere, sanitizeTenantPayload, verifyTenantForeignKeys } from '@/lib/erp/rbac'
+import {
+  requireAuthContext,
+  isAuthFailure,
+  scopedWhere,
+  sanitizeTenantPayload,
+  verifyTenantForeignKeys,
+  checkTransactionPolicy,
+} from '@/lib/erp/rbac'
 
 // GET /api/erp/products
 export async function GET(req: Request) {
@@ -35,7 +42,7 @@ export async function GET(req: Request) {
 
     const warehouseId = url.searchParams.get('warehouseId') || url.searchParams.get('storehouseId')
 
-    const [data, total] = await Promise.all([
+    const [data, total, canViewCost, canViewStock] = await Promise.all([
       db.product.findMany({
         where,
         skip,
@@ -52,6 +59,8 @@ export async function GET(req: Request) {
         orderBy: { createdAt: 'desc' },
       }),
       db.product.count({ where }),
+      checkTransactionPolicy(auth, 'ALLOW_VIEW_ITEM_COST'),
+      checkTransactionPolicy(auth, 'SHOW_AVAILABLE_QTY_IN_TX'),
     ])
 
     const enriched = data.map((p: any) => {
@@ -62,13 +71,21 @@ export async function GET(req: Request) {
       const whStock = whQuants?.reduce((sum: number, q: any) => sum + (q.quantity || 0), 0) ?? 0
       const whReserved = whQuants?.reduce((sum: number, q: any) => sum + (q.reservedQty || 0), 0) ?? 0
 
-      return {
+      const item: any = {
         ...p,
-        stock: totalStock,
-        availableStock: totalStock - totalReserved,
-        warehouseStock: whStock,
-        warehouseAvailableStock: whStock - whReserved,
+        stock: canViewStock.allowed ? totalStock : undefined,
+        availableStock: canViewStock.allowed ? totalStock - totalReserved : undefined,
+        warehouseStock: canViewStock.allowed ? whStock : undefined,
+        warehouseAvailableStock: canViewStock.allowed ? whStock - whReserved : undefined,
       }
+
+      // Server-Side Data Redaction: Strip sensitive cost when policy denies access
+      if (!canViewCost.allowed) {
+        delete item.costPrice
+        delete item.standardCost
+      }
+
+      return item
     })
 
     return list(enriched, total, page, pageSize)

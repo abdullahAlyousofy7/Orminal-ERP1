@@ -4,7 +4,22 @@
 // CSV / JSON export utilities with Arabic BOM support
 // ============================================================
 
-export function exportToCSV(filename: string, rows: Record<string, any>[], headers?: { key: string; label: string }[]) {
+export function exportToCSV(
+  arg1: string | Record<string, any>[],
+  arg2?: string | Record<string, any>[],
+  headers?: { key: string; label: string }[]
+) {
+  let filename = 'export.csv'
+  let rows: Record<string, any>[] = []
+
+  if (typeof arg1 === 'string') {
+    filename = arg1
+    rows = Array.isArray(arg2) ? arg2 : []
+  } else if (Array.isArray(arg1)) {
+    rows = arg1
+    filename = typeof arg2 === 'string' ? arg2 : 'export.csv'
+  }
+
   if (!rows.length) {
     rows = [{}]
   }
