@@ -140,12 +140,10 @@ const SubledgersNamingModule = lazy(() => import('@/components/modules/subledger
 
 // Permissions & Security Subsystem Modules
 const UserGroupsModule = lazy(() => import('@/components/modules/user-groups-module'))
-const UserDataModule = lazy(() => import('@/components/modules/user-data-module'))
 const TransactionPrivilegesModule = lazy(() => import('@/components/modules/transaction-privileges-module'))
 const ScreenPrivilegesModule = lazy(() => import('@/components/modules/screen-privileges-module'))
 const InputPrivilegesModule = lazy(() => import('@/components/modules/input-privileges-module'))
 const ViewPrivilegesModule = lazy(() => import('@/components/modules/view-privileges-module'))
-const AuditControlModule = lazy(() => import('@/components/modules/audit-control-module'))
 
 export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   // Standalone Org Structure
@@ -338,12 +336,10 @@ export const moduleRegistry: Record<ModuleKey, React.ComponentType> = {
   profile: ProfileModule,
   'document-templates': DocumentTemplatesModule,
   'user-groups': UserGroupsModule,
-  'user-data': UserDataModule,
   'transaction-privileges': TransactionPrivilegesModule,
   'screen-privileges': ScreenPrivilegesModule,
   'input-privileges': InputPrivilegesModule,
   'view-privileges': ViewPrivilegesModule,
-  'audit-control': AuditControlModule,
   'system-settings': SettingsModule,
   'sequence-doc-types': SequenceDocTypesModule,
   'transaction-sequences': TransactionSequencesModule,

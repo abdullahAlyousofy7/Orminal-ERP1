@@ -43,7 +43,7 @@ export default function ViewPrivilegesModule() {
   const { data: usersResponse } = useQuery({
     queryKey: ['users-for-inspector'],
     queryFn: async () => {
-      const res = await fetch('/api/erp/permissions/user-data?pageSize=100')
+      const res = await fetch('/api/erp/users?pageSize=100')
       if (!res.ok) return { data: [] }
       return res.json()
     },

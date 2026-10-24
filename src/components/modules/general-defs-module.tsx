@@ -164,7 +164,7 @@ export default function GeneralDefsModule({ embedded = false }: GeneralDefsModul
   const [currentPage, setCurrentPage] = useState(1)
 
   // Pagination for Items
-  const [itemsPageSize, setItemsPageSize] = useState(20)
+  const [itemsPageSize, setItemsPageSize] = useState(10)
   const [itemsCurrentPage, setItemsCurrentPage] = useState(1)
 
   // Column Widths for Types Table

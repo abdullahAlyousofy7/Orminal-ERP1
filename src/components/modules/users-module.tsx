@@ -37,6 +37,7 @@ import {
   Users as UsersIcon, ShieldCheck, UserCheck, KeyRound, Plus, Pencil, Trash2,
   Lock, Unlock, Eye, EyeOff, Search, X, ChevronLeft, ChevronRight, ChevronsLeft,
   ChevronsRight, RotateCw, Printer, FileSpreadsheet, Columns, FileText,
+  Image as ImageIcon, Calendar, Clock, DollarSign, User as UserIcon, UserCircle,
 } from 'lucide-react'
 
 interface Role {
@@ -54,8 +55,20 @@ interface Branch {
   nameEn?: string
 }
 
+interface Employee {
+  id: string
+  employeeNo: string
+  nameAr: string
+  nameEn?: string
+  phone?: string
+  nationalId?: string
+  department?: { id: string; nameAr: string }
+  jobPosition?: { id: string; nameAr: string }
+}
+
 interface User {
   id: string
+  userCode?: number
   username: string
   email: string
   nameAr: string
@@ -64,6 +77,16 @@ interface User {
   avatar?: string
   active: boolean
   mfaEnabled: boolean
+  employeeNumber?: string
+  nationalId?: string
+  managerId?: string
+  validFromDate?: string
+  validToDate?: string
+  validFromTime?: string
+  validToTime?: string
+  defaultPriceLevel?: string
+  minPriceLimit?: number | string
+  maxPriceLimit?: number | string
   defaultBranchId?: string
   locale: string
   timezone: string
@@ -71,6 +94,8 @@ interface User {
   createdAt: string
   defaultBranch?: Branch
   userRoles: { role: Role }[]
+  manager?: { id: string; userCode?: number; nameAr: string; username: string }
+  employee?: { id: string; employeeNo: string; nameAr: string; nameEn?: string }
   _count?: { auditLogs: number }
 }
 
@@ -87,7 +112,7 @@ export function UsersModule() {
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState<number>(1)
-  const [pageSize, setPageSize] = useState<number>(20)
+  const [pageSize, setPageSize] = useState<number>(10)
 
   // Selection & Modal State
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null)
@@ -97,17 +122,50 @@ export function UsersModule() {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [selectedRole, setSelectedRole] = useState<string>('')
   const [selectedBranch, setSelectedBranch] = useState<string>('')
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
 
-  // Column Visibility Controls (matching fiscal-periods-module.tsx)
+  // Full User Form State matching the Modal Reference
+  const [formData, setFormData] = useState({
+    username: '',
+    nameAr: '',
+    nameEn: '',
+    employeeNumber: '',
+    employeeId: '',
+    nationalId: '',
+    managerId: '',
+    phone: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+    roleId: '',
+    defaultBranchId: '',
+    validFromDate: '',
+    validToDate: '',
+    validFromTime: '',
+    validToTime: '',
+    defaultPriceLevel: 'retail',
+    minPriceLimit: '0.00',
+    maxPriceLimit: '0.00',
+    active: true,
+    mfaEnabled: false,
+    avatar: '',
+  })
+
+  // Column Visibility Controls
   const DEFAULT_VISIBLE_COLS = useMemo(
     () => ({
+      userCode: true,
       username: true,
       nameAr: true,
       nameEn: false,
+      employeeNumber: true,
+      nationalId: false,
       email: true,
       phone: false,
       role: true,
       branch: true,
+      accessWindow: false,
+      defaultPriceLevel: false,
       mfaEnabled: true,
       active: true,
       lastLoginAt: true,
@@ -118,16 +176,21 @@ export function UsersModule() {
   )
   const [visibleCols, setVisibleCols] = useState<Record<string, boolean>>(DEFAULT_VISIBLE_COLS)
 
-  // Column Resizing Controls (matching fiscal-periods-module.tsx)
+  // Column Resizing Controls
   const DEFAULT_COL_WIDTHS = useMemo<Record<string, number>>(
     () => ({
+      userCode: 85,
       username: 130,
       nameAr: 160,
       nameEn: 140,
+      employeeNumber: 115,
+      nationalId: 125,
       email: 180,
       phone: 115,
       role: 130,
       branch: 130,
+      accessWindow: 160,
+      defaultPriceLevel: 110,
       mfaEnabled: 85,
       active: 85,
       lastLoginAt: 125,
@@ -194,6 +257,17 @@ export function UsersModule() {
   })
   const branches = branchesData?.data ?? []
 
+  // Employees Query from HR Subsystem
+  const { data: employeesData } = useQuery<{ data: Employee[] }>({
+    queryKey: ['employees-for-users'],
+    queryFn: async () => {
+      const r = await fetch('/api/erp/employees?pageSize=300')
+      if (!r.ok) return { data: [] }
+      return r.json()
+    },
+  })
+  const employees = employeesData?.data ?? []
+
   const users = data?.data ?? []
 
   // Selected User helper
@@ -248,21 +322,19 @@ export function UsersModule() {
       })
       if (!r.ok) {
         const err = await r.json().catch(() => ({}))
-        throw new Error(err?.error?.message ?? 'Failed')
+        throw new Error(err?.error?.message ?? err?.message ?? 'Failed')
       }
       return r.json()
     },
     onSuccess: () => {
-      toast.success(editing ? 'تم تحديث المستخدم بنجاح' : 'تم إنشاء المستخدم بنجاح')
+      toast.success(editing ? (isAr ? 'تم تحديث المستخدم بنجاح' : 'User updated successfully') : (isAr ? 'تم إنشاء المستخدم بنجاح' : 'User created successfully'))
       qc.invalidateQueries({ queryKey: ['users'] })
+      qc.invalidateQueries({ queryKey: ['employees-for-users'] })
       setDialogOpen(false)
       setEditing(null)
-      setChangePasswordOpen(false)
       setShowPassword(false)
-      setSelectedRole('')
-      setSelectedBranch('')
     },
-    onError: (e: any) => toast.error(e.message || 'حدث خطأ'),
+    onError: (e: any) => toast.error(e.message || (isAr ? 'حدث خطأ' : 'Error')),
   })
 
   const deleteMutation = useMutation({
@@ -275,38 +347,92 @@ export function UsersModule() {
       return r.json()
     },
     onSuccess: () => {
-      toast.success('تم حذف المستخدم')
+      toast.success(isAr ? 'تم حذف المستخدم' : 'User deleted')
       if (selectedUserId) setSelectedUserId(null)
       qc.invalidateQueries({ queryKey: ['users'] })
     },
-    onError: (e: any) => toast.error(e.message || 'حدث خطأ'),
+    onError: (e: any) => toast.error(e.message || (isAr ? 'حدث خطأ' : 'Error')),
   })
+
+  const handleAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error(isAr ? 'حجم الصورة يجب ألا يتجاوز 2 ميجابايت' : 'Image size cannot exceed 2MB')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setFormData((p) => ({ ...p, avatar: reader.result as string }))
+    }
+    reader.readAsDataURL(file)
+  }
 
   const openEdit = (u: User) => {
     setEditing(u)
-    setSelectedRole(u.userRoles?.[0]?.role?.id ?? '')
-    setSelectedBranch(u.defaultBranchId ?? '')
-    setChangePasswordOpen(false)
+    setFormData({
+      username: u.username,
+      nameAr: u.nameAr,
+      nameEn: u.nameEn || '',
+      employeeNumber: u.employeeNumber || u.employee?.employeeNo || '',
+      employeeId: u.employee?.id || '',
+      nationalId: u.nationalId || '',
+      managerId: u.managerId || '',
+      phone: u.phone || '',
+      email: u.email,
+      password: '',
+      confirmPassword: '',
+      roleId: u.userRoles?.[0]?.role?.id || '',
+      defaultBranchId: u.defaultBranchId || '',
+      validFromDate: u.validFromDate ? u.validFromDate.slice(0, 10) : '',
+      validToDate: u.validToDate ? u.validToDate.slice(0, 10) : '',
+      validFromTime: u.validFromTime || '',
+      validToTime: u.validToTime || '',
+      defaultPriceLevel: u.defaultPriceLevel || 'retail',
+      minPriceLimit: u.minPriceLimit !== undefined && u.minPriceLimit !== null ? String(u.minPriceLimit) : '0.00',
+      maxPriceLimit: u.maxPriceLimit !== undefined && u.maxPriceLimit !== null ? String(u.maxPriceLimit) : '0.00',
+      active: u.active,
+      mfaEnabled: u.mfaEnabled,
+      avatar: u.avatar || '',
+    })
     setShowPassword(false)
     setDialogOpen(true)
   }
 
   const openAdd = () => {
     setEditing(null)
-    setSelectedRole('')
-    setSelectedBranch('')
-    setChangePasswordOpen(false)
+    setFormData({
+      username: '',
+      nameAr: '',
+      nameEn: '',
+      employeeNumber: '',
+      employeeId: '',
+      nationalId: '',
+      managerId: '',
+      phone: '',
+      email: '',
+      password: '',
+      confirmPassword: '',
+      roleId: roles[0]?.id || '',
+      defaultBranchId: branches[0]?.id || '',
+      validFromDate: '',
+      validToDate: '',
+      validFromTime: '',
+      validToTime: '',
+      defaultPriceLevel: 'retail',
+      minPriceLimit: '0.00',
+      maxPriceLimit: '0.00',
+      active: true,
+      mfaEnabled: false,
+      avatar: '',
+    })
     setShowPassword(false)
     setDialogOpen(true)
   }
 
   const openChangePassword = (u: User) => {
-    setEditing(u)
-    setSelectedRole(u.userRoles?.[0]?.role?.id ?? '')
-    setSelectedBranch(u.defaultBranchId ?? '')
-    setChangePasswordOpen(true)
+    openEdit(u)
     setShowPassword(false)
-    setDialogOpen(true)
   }
 
   const handleToggleStatus = (u: User) => {
@@ -325,41 +451,75 @@ export function UsersModule() {
 
   const handleDeleteUser = (u: User) => {
     if (u.username === 'admin') {
-      toast.error('لا يمكن حذف حساب مدير النظام (admin)')
+      toast.error(isAr ? 'لا يمكن حذف حساب مدير النظام (admin)' : 'Admin user cannot be deleted')
       return
     }
-    if (confirm(`هل أنت متأكد من رغبتك في حذف المستخدم "${u.nameAr}"؟`)) {
+    if (confirm(isAr ? `هل أنت متأكد من رغبتك في حذف المستخدم "${u.nameAr}"؟` : `Delete user "${u.nameAr}"?`)) {
       deleteMutation.mutate(u.id)
     }
   }
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const fd = new FormData(e.currentTarget)
-    const payload: any = {
-      username: editing ? editing.username : fd.get('username'),
-      nameAr: fd.get('nameAr'),
-      nameEn: fd.get('nameEn') || undefined,
-      email: fd.get('email'),
-      phone: fd.get('phone') || undefined,
-      roleId: selectedRole || undefined,
-      defaultBranchId: selectedBranch || undefined,
-      active: fd.get('active') === 'on',
-      mfaEnabled: fd.get('mfaEnabled') === 'on',
+  const handleFormSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    if (!formData.nameAr.trim()) {
+      toast.error(isAr ? 'اسم المستخدم بالعربية مطلوب' : 'Arabic Name is required')
+      return
+    }
+    if (!editing && !formData.username.trim()) {
+      toast.error(isAr ? 'رمز المستخدم (اسم الدخول) مطلوب' : 'Username is required')
+      return
+    }
+    if (!formData.email.trim()) {
+      toast.error(isAr ? 'البريد الإلكتروني مطلوب' : 'Email is required')
+      return
     }
     if (!editing) {
-      const pw = fd.get('password')
-      if (!pw) {
-        toast.error('كلمة المرور مطلوبة للمستخدم الجديد')
+      if (!formData.password) {
+        toast.error(isAr ? 'كلمة المرور مطلوبة للمستخدم الجديد' : 'Password is required')
         return
       }
-      payload.password = pw
-    } else if (changePasswordOpen) {
-      const pw = fd.get('password')
-      if (pw) payload.password = pw
+      if (formData.confirmPassword && formData.password !== formData.confirmPassword) {
+        toast.error(isAr ? 'كلمة المرور وتأكيدها غير متطابقين' : 'Passwords do not match')
+        return
+      }
+    } else if (formData.password) {
+      if (formData.confirmPassword && formData.password !== formData.confirmPassword) {
+        toast.error(isAr ? 'كلمة المرور وتأكيدها غير متطابقين' : 'Passwords do not match')
+        return
+      }
     }
+
+    const payload: any = {
+      username: editing ? editing.username : formData.username.trim(),
+      nameAr: formData.nameAr.trim(),
+      nameEn: formData.nameEn.trim() || undefined,
+      email: formData.email.trim().toLowerCase(),
+      phone: formData.phone.trim() || undefined,
+      avatar: formData.avatar || undefined,
+      employeeNumber: formData.employeeNumber.trim() || undefined,
+      employeeId: formData.employeeId || undefined,
+      nationalId: formData.nationalId.trim() || undefined,
+      managerId: formData.managerId || undefined,
+      roleId: formData.roleId || undefined,
+      defaultBranchId: formData.defaultBranchId || undefined,
+      validFromDate: formData.validFromDate || undefined,
+      validToDate: formData.validToDate || undefined,
+      validFromTime: formData.validFromTime || undefined,
+      validToTime: formData.validToTime || undefined,
+      defaultPriceLevel: formData.defaultPriceLevel || 'retail',
+      minPriceLimit: formData.minPriceLimit ? Number(formData.minPriceLimit) : undefined,
+      maxPriceLimit: formData.maxPriceLimit ? Number(formData.maxPriceLimit) : undefined,
+      active: formData.active,
+      mfaEnabled: formData.mfaEnabled,
+    }
+
+    if (formData.password) {
+      payload.password = formData.password
+    }
+
     saveMutation.mutate(payload)
   }
+
 
   // Export Handlers (Matching fiscal-periods-module.tsx Standard)
   const handleExportCSV = () => {
@@ -598,6 +758,12 @@ export function UsersModule() {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align={isAr ? 'start' : 'end'} className="w-42 max-h-80 overflow-y-auto">
                   <DropdownMenuCheckboxItem
+                    checked={visibleCols.userCode}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, userCode: !!v }))}
+                  >
+                    {isAr ? 'رمز المستخدم' : 'User Code'}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
                     checked={visibleCols.username}
                     onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, username: !!v }))}
                   >
@@ -614,6 +780,30 @@ export function UsersModule() {
                     onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, nameEn: !!v }))}
                   >
                     {isAr ? 'الاسم الإنجليزي' : 'English Name'}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.employeeNumber}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, employeeNumber: !!v }))}
+                  >
+                    {isAr ? 'رقم الموظف' : 'Employee No'}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.nationalId}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, nationalId: !!v }))}
+                  >
+                    {isAr ? 'الهوية / PIN' : 'National ID / PIN'}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.accessWindow}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, accessWindow: !!v }))}
+                  >
+                    {isAr ? 'نطاق الصلاحية' : 'Access Window'}
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={visibleCols.defaultPriceLevel}
+                    onCheckedChange={(v) => setVisibleCols((p) => ({ ...p, defaultPriceLevel: !!v }))}
+                  >
+                    {isAr ? 'مستوى التسعيرة' : 'Price Level'}
                   </DropdownMenuCheckboxItem>
                   <DropdownMenuCheckboxItem
                     checked={visibleCols.email}
@@ -988,6 +1178,19 @@ export function UsersModule() {
                   #
                 </TableHead>
 
+                {visibleCols.userCode && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.userCode || 85}px`,
+                      minWidth: `${colWidths.userCode || 85}px`,
+                      maxWidth: `${colWidths.userCode || 85}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 text-center border-r border-slate-200 dark:border-slate-800 whitespace-nowrap select-none"
+                  >
+                    <span>{isAr ? 'رمز المستخدم' : 'User Code'}</span>
+                  </TableHead>
+                )}
+
                 {visibleCols.username && (
                   <TableHead
                     style={{
@@ -1075,6 +1278,32 @@ export function UsersModule() {
                     >
                       <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
                     </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.employeeNumber && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.employeeNumber || 115}px`,
+                      minWidth: `${colWidths.employeeNumber || 115}px`,
+                      maxWidth: `${colWidths.employeeNumber || 115}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 text-center border-r border-slate-200 dark:border-slate-800 whitespace-nowrap select-none"
+                  >
+                    <span>{isAr ? 'رقم الموظف' : 'Employee No'}</span>
+                  </TableHead>
+                )}
+
+                {visibleCols.nationalId && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.nationalId || 125}px`,
+                      minWidth: `${colWidths.nationalId || 125}px`,
+                      maxWidth: `${colWidths.nationalId || 125}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 text-center border-r border-slate-200 dark:border-slate-800 whitespace-nowrap select-none"
+                  >
+                    <span>{isAr ? 'الهوية / PIN' : 'National ID'}</span>
                   </TableHead>
                 )}
 
@@ -1192,6 +1421,32 @@ export function UsersModule() {
                     >
                       <div className="w-[2px] h-4/5 bg-slate-300 dark:bg-slate-700 group-hover/handle:bg-white rounded-full" />
                     </div>
+                  </TableHead>
+                )}
+
+                {visibleCols.accessWindow && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.accessWindow || 160}px`,
+                      minWidth: `${colWidths.accessWindow || 160}px`,
+                      maxWidth: `${colWidths.accessWindow || 160}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 text-center border-r border-slate-200 dark:border-slate-800 whitespace-nowrap select-none"
+                  >
+                    <span>{isAr ? 'نطاق الصلاحية' : 'Access Window'}</span>
+                  </TableHead>
+                )}
+
+                {visibleCols.defaultPriceLevel && (
+                  <TableHead
+                    style={{
+                      width: `${colWidths.defaultPriceLevel || 110}px`,
+                      minWidth: `${colWidths.defaultPriceLevel || 110}px`,
+                      maxWidth: `${colWidths.defaultPriceLevel || 110}px`,
+                    }}
+                    className="font-bold py-1.5 px-2 text-center border-r border-slate-200 dark:border-slate-800 whitespace-nowrap select-none"
+                  >
+                    <span>{isAr ? 'مستوى التسعيرة' : 'Price Level'}</span>
                   </TableHead>
                 )}
 
@@ -1366,6 +1621,20 @@ export function UsersModule() {
                         {(currentPage - 1) * pageSize + idx + 1}
                       </TableCell>
 
+                      {/* User Code */}
+                      {visibleCols.userCode && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.userCode || 85}px`,
+                            minWidth: `${colWidths.userCode || 85}px`,
+                            maxWidth: `${colWidths.userCode || 85}px`,
+                          }}
+                          className="font-mono text-center font-bold text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                        >
+                          <span className="truncate block w-full">{u.userCode ? `#${u.userCode}` : '—'}</span>
+                        </TableCell>
+                      )}
+
                       {/* Username */}
                       {visibleCols.username && (
                         <TableCell
@@ -1412,6 +1681,43 @@ export function UsersModule() {
                         >
                           <span className="truncate block w-full cursor-default" title={u.nameEn || '—'}>
                             {u.nameEn || '—'}
+                          </span>
+                        </TableCell>
+                      )}
+
+                      {/* Employee Number */}
+                      {visibleCols.employeeNumber && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.employeeNumber || 115}px`,
+                            minWidth: `${colWidths.employeeNumber || 115}px`,
+                            maxWidth: `${colWidths.employeeNumber || 115}px`,
+                          }}
+                          className="font-mono text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                          dir="ltr"
+                        >
+                          {u.employeeNumber || u.employee?.employeeNo ? (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                              {u.employeeNumber || u.employee?.employeeNo}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-xs">—</span>
+                          )}
+                        </TableCell>
+                      )}
+
+                      {/* National ID / PIN */}
+                      {visibleCols.nationalId && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.nationalId || 125}px`,
+                            minWidth: `${colWidths.nationalId || 125}px`,
+                            maxWidth: `${colWidths.nationalId || 125}px`,
+                          }}
+                          className="font-mono text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                        >
+                          <span className="truncate block w-full" title={u.nationalId || '—'}>
+                            {u.nationalId || '—'}
                           </span>
                         </TableCell>
                       )}
@@ -1482,6 +1788,53 @@ export function UsersModule() {
                         >
                           <span className="truncate block w-full cursor-default" title={u.defaultBranch?.nameAr ?? '—'}>
                             {u.defaultBranch?.nameAr ?? '—'}
+                          </span>
+                        </TableCell>
+                      )}
+
+                      {/* Access Window */}
+                      {visibleCols.accessWindow && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.accessWindow || 160}px`,
+                            minWidth: `${colWidths.accessWindow || 160}px`,
+                            maxWidth: `${colWidths.accessWindow || 160}px`,
+                          }}
+                          className="text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[10px]"
+                        >
+                          {u.validFromTime || u.validToTime ? (
+                            <span className="inline-flex items-center gap-1 font-mono text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-1.5 py-0.5 rounded">
+                              <Clock className="size-2.5" />
+                              {u.validFromTime || '--:--'} - {u.validToTime || '--:--'}
+                            </span>
+                          ) : u.validFromDate || u.validToDate ? (
+                            <span className="font-mono text-blue-600 dark:text-blue-400">
+                              {u.validToDate ? String(u.validToDate).slice(0, 10) : '—'}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">{isAr ? 'دائم' : 'Unlimited'}</span>
+                          )}
+                        </TableCell>
+                      )}
+
+                      {/* Default Price Level */}
+                      {visibleCols.defaultPriceLevel && (
+                        <TableCell
+                          style={{
+                            width: `${colWidths.defaultPriceLevel || 110}px`,
+                            minWidth: `${colWidths.defaultPriceLevel || 110}px`,
+                            maxWidth: `${colWidths.defaultPriceLevel || 110}px`,
+                          }}
+                          className="text-center border-r border-slate-100 dark:border-slate-800 py-1 px-2 overflow-hidden text-[11px]"
+                        >
+                          <span className="text-slate-700 dark:text-slate-300 font-medium">
+                            {u.defaultPriceLevel === 'wholesale'
+                              ? (isAr ? 'جملة' : 'Wholesale')
+                              : u.defaultPriceLevel === 'special'
+                                ? (isAr ? 'خاص' : 'Special')
+                                : u.defaultPriceLevel === 'distributor'
+                                  ? (isAr ? 'موزع' : 'Distributor')
+                                  : (isAr ? 'تجزئة' : 'Retail')}
                           </span>
                         </TableCell>
                       )}
@@ -1714,165 +2067,496 @@ export function UsersModule() {
         </div>
       </Card>
 
-      {/* ── Add / Edit User Dialog ─────────────────────────────────────── */}
+      {/* ── Add / Edit User Dialog (Exact Match to Design Reference) ──────── */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent
+
+          className="max-w-4xl p-0 overflow-hidden bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800" dir={'dir'}
+        >
+          {/* Blue Header Bar */}
           <DialogHeader>
-            <DialogTitle>{editing ? 'تعديل مستخدم' : 'إضافة مستخدم جديد'}</DialogTitle>
-            <DialogDescription>
-              {editing ? `تعديل بيانات: ${editing.nameAr}` : 'أدخل بيانات المستخدم الجديد'}
-            </DialogDescription>
+            <div className="flex items-center gap-2.5">
+              <div className="size-12 rounded-xl bg-blue-100/30 dark:bg-blue-950/60 border border-blue-100 dark:border-blue-500/20 text-blue-600 dark:text-blue-300 flex items-center justify-center shadow-sm shadow-blue-100/40 dark:shadow-none shrink-0">
+                <UserCircle className="size-6" />
+              </div>
+              <div className="space-y-1">
+                <DialogTitle className="text-xl font-bold tracking-tight text-blue-950 dark:text-white">
+                  {editing
+                    ? (isAr ? 'تعديل بيانات المستخدم' : 'Edit User Data')
+                    : (isAr ? 'إضافة بيانات مستخدم جديد' : 'Add New User Data')}
+                </DialogTitle>
+              </div>
+            </div>
           </DialogHeader>
-          <DialogBody>
-            <form onSubmit={handleSubmit}>
-              <ScrollArea className="max-h-[60vh] pe-2">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-1">
-                  {!editing && (
-                    <div className="space-y-1.5">
-                      <Label htmlFor="username">اسم المستخدم *</Label>
-                      <Input id="username" name="username" required placeholder="admin" dir="ltr" />
+
+          {/* Modal Body */}
+          <div className="p-5 space-y-4 max-h-[78vh] overflow-y-auto scrollbar-thin bg-slate-50/70 dark:bg-[#0b1228]">
+            {/* Top Identity Block */}
+            <div className="border border-slate-200 dark:border-slate-700/80 rounded-xl p-4 bg-white dark:bg-[#0e1633]/70 shadow-xs">
+              <div className="flex flex-col md:flex-row gap-5 items-stretch">
+                {/* 2-Column Fields Grid */}
+                <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3.5 order-2 md:order-1">
+                  {/* Row 1: Username & Arabic Name */}
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold flex items-center gap-1">
+                      <span>{isAr ? 'رمز المستخدم (اسم الدخول)' : 'Username'}</span>
+                      <span className="text-rose-500">*</span>
+                    </Label>
+                    <Input
+                      value={formData.username}
+                      onChange={(e) => setFormData((p) => ({ ...p, username: e.target.value }))}
+                      placeholder="...e.g. ahmed, admin"
+                      disabled={!!editing}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-mono disabled:opacity-60"
+                      dir="ltr"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold flex items-center gap-1">
+                      <span>{isAr ? 'اسم المستخدم (بالعربية)' : 'Arabic Name'}</span>
+                      <span className="text-rose-500">*</span>
+                    </Label>
+                    <Input
+                      value={formData.nameAr}
+                      onChange={(e) => setFormData((p) => ({ ...p, nameAr: e.target.value }))}
+                      placeholder={isAr ? 'الاسم الكامل بالعربية...' : 'Full Arabic name...'}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                      required
+                    />
+                  </div>
+
+                  {/* Row 2: Employee Number (with HR linkage) & National ID / PIN */}
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold flex items-center justify-between">
+                      <span>{isAr ? 'رقم الموظف' : 'Employee No'}</span>
+                      {employees.length > 0 && (
+                        <span className="text-[10px] text-blue-600 dark:text-blue-400 font-normal">
+                          {isAr ? '(ربط مع الموارد البشرية)' : '(Link to HR)'}
+                        </span>
+                      )}
+                    </Label>
+                    <div className="relative">
+                      <Input
+                        list="hr-employees-list"
+                        value={formData.employeeNumber}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          const matchedEmp = employees.find(
+                            (emp) =>
+                              emp.employeeNo === val ||
+                              `${emp.employeeNo} - ${emp.nameAr}` === val
+                          )
+                          if (matchedEmp) {
+                            setFormData((p) => ({
+                              ...p,
+                              employeeNumber: matchedEmp.employeeNo,
+                              employeeId: matchedEmp.id,
+                              nameAr: p.nameAr || matchedEmp.nameAr,
+                              phone: p.phone || matchedEmp.phone || '',
+                              nationalId: p.nationalId || matchedEmp.nationalId || '',
+                            }))
+                          } else {
+                            setFormData((p) => ({ ...p, employeeNumber: val, employeeId: '' }))
+                          }
+                        }}
+                        placeholder="e.g. EMP-104"
+                        className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-mono"
+                        dir="ltr"
+                      />
+                      <datalist id="hr-employees-list">
+                        {employees.map((emp) => (
+                          <option key={emp.id} value={emp.employeeNo}>
+                            {emp.employeeNo} - {emp.nameAr}{' '}
+                            {emp.jobPosition?.nameAr ? `(${emp.jobPosition.nameAr})` : ''}
+                          </option>
+                        ))}
+                      </datalist>
                     </div>
-                  )}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="nameAr">الاسم (عربي) *</Label>
-                    <Input id="nameAr" name="nameAr" defaultValue={editing?.nameAr} required />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="nameEn">الاسم (إنجليزي)</Label>
-                    <Input id="nameEn" name="nameEn" defaultValue={editing?.nameEn} dir="ltr" />
+
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold">
+                      <span>{isAr ? 'رقم التعريف الشخصي (الهوية / PIN)' : 'National ID / PIN'}</span>
+                    </Label>
+                    <Input
+                      value={formData.nationalId}
+                      onChange={(e) => setFormData((p) => ({ ...p, nationalId: e.target.value }))}
+                      placeholder={isAr ? 'رقم الهوية الوطنية أو الإقامة...' : 'National ID or Residency...'}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                    />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="email">البريد الإلكتروني *</Label>
-                    <Input id="email" name="email" type="email" defaultValue={editing?.email} required dir="ltr" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="phone">الهاتف</Label>
-                    <Input id="phone" name="phone" defaultValue={editing?.phone} dir="ltr" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>الدور</Label>
-                    <Select value={selectedRole} onValueChange={setSelectedRole}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="اختر دوراً" />
+
+                  {/* Row 3: Operating Branch & Role Group */}
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold">
+                      <span>{isAr ? 'الوحدة التشغيلية (الفرع)' : 'Operating Branch'}</span>
+                    </Label>
+                    <Select
+                      value={formData.defaultBranchId || '_none'}
+                      onValueChange={(val) =>
+                        setFormData((p) => ({
+                          ...p,
+                          defaultBranchId: val === '_none' ? '' : val,
+                        }))
+                      }
+                      dir={isAr ? 'rtl' : 'ltr'}
+                    >
+                      <SelectTrigger className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100">
+                        <SelectValue placeholder={isAr ? '-- اختر الفرع --' : '-- Select Branch --'} />
                       </SelectTrigger>
-                      <SelectContent>
-                        {roles.map((r) => (
-                          <SelectItem key={r.id} value={r.id}>
-                            {r.nameAr} <span className="text-xs text-muted-foreground ms-1" dir="ltr">({r.code})</span>
+                      <SelectContent dir={isAr ? 'rtl' : 'ltr'} className="bg-white dark:bg-[#0e1633] border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 shadow-lg">
+                        <SelectItem value="_none">{isAr ? '-- بدون تحديد فرع --' : '-- No Branch --'}</SelectItem>
+                        {branches.map((b) => (
+                          <SelectItem key={b.id} value={b.id}>
+                            {b.code} - {isAr ? b.nameAr : b.nameEn}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>الفرع</Label>
-                    <Select value={selectedBranch} onValueChange={setSelectedBranch}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="اختر فرعاً" />
+
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold flex items-center gap-1">
+                      <span>{isAr ? 'دور / مجموعة المستخدم' : 'User Role / Group'}</span>
+                      <span className="text-rose-500">*</span>
+                    </Label>
+                    <Select
+                      value={formData.roleId || '_none'}
+                      onValueChange={(val) =>
+                        setFormData((p) => ({
+                          ...p,
+                          roleId: val === '_none' ? '' : val,
+                        }))
+                      }
+                      dir={isAr ? 'rtl' : 'ltr'}
+                    >
+                      <SelectTrigger className="h-9 text-xs bg-white dark:bg-[#0b1228] border-rose-300 dark:border-rose-900/50 focus:border-blue-500 text-slate-900 dark:text-slate-100">
+                        <SelectValue placeholder={isAr ? '-- اختر الدور الرئيسي --' : '-- Select Role --'} />
                       </SelectTrigger>
-                      <SelectContent>
-                        {branches.length === 0 ? (
-                          <SelectItem value="_none" disabled>لا توجد فروع</SelectItem>
-                        ) : (
-                          branches.map((b) => (
-                            <SelectItem key={b.id} value={b.id}>
-                              {b.nameAr} <span className="text-xs text-muted-foreground ms-1" dir="ltr">({b.code})</span>
-                            </SelectItem>
-                          ))
-                        )}
+                      <SelectContent dir={isAr ? 'rtl' : 'ltr'} className="bg-white dark:bg-[#0e1633] border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 shadow-lg">
+                        <SelectItem value="_none">{isAr ? '-- اختر الدور الرئيسي --' : '-- Select Role --'}</SelectItem>
+                        {roles.map((r) => (
+                          <SelectItem key={r.id} value={r.id}>
+                            {isAr ? r.nameAr : r.nameEn} ({r.code})
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
 
-                  {/* Password section */}
-                  {!editing && (
-                    <div className="space-y-1.5">
-                      <Label htmlFor="password">كلمة المرور *</Label>
-                      <div className="relative">
-                        <Input
-                          id="password"
-                          name="password"
-                          type={showPassword ? 'text' : 'password'}
-                          required
-                          placeholder="••••••••"
-                          className="pe-9"
-                          dir="ltr"
-                        />
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="absolute end-1 top-1/2 -translate-y-1/2 size-7"
-                          onClick={() => setShowPassword((v) => !v)}
-                        >
-                          {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                        </Button>
-                      </div>
+                {/* Image Upload Box (Positioned on the Right in RTL) */}
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full md:w-48 h-44 border-2 border-dashed border-slate-300 hover:border-blue-500 dark:border-slate-700/90 dark:hover:border-blue-500 rounded-xl flex flex-col items-center justify-center p-2 cursor-pointer bg-slate-100/70 hover:bg-slate-100 dark:bg-slate-900/40 dark:hover:bg-slate-900/60 relative group shrink-0 transition-colors order-1 md:order-2"
+                >
+                  {formData.avatar ? (
+                    <div className="relative w-full h-full flex items-center justify-center overflow-hidden rounded-lg">
+                      <img
+                        src={formData.avatar}
+                        alt="Avatar"
+                        className="w-full h-full object-cover rounded-lg"
+                      />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setFormData((p) => ({ ...p, avatar: '' }))
+                        }}
+                        className="absolute top-1 end-1 bg-rose-600 hover:bg-rose-700 text-white p-1 rounded-full text-xs shadow-md transition-colors cursor-pointer"
+                        title={isAr ? 'إزالة الصورة' : 'Remove Image'}
+                      >
+                        <X className="size-3" />
+                      </button>
                     </div>
+                  ) : (
+                    <>
+                      <ImageIcon className="size-10 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors mb-2" />
+                      <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                        {isAr ? 'حدد الصورة' : 'Select Photo'}
+                      </span>
+                    </>
                   )}
-                  {editing && (
-                    <div className="md:col-span-2">
-                      <div className="flex items-center gap-2 p-3 rounded-lg border bg-muted/30">
-                        <Lock className="size-4 text-muted-foreground" />
-                        <span className="text-sm flex-1">كلمة المرور محمية</span>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={changePasswordOpen ? 'default' : 'outline'}
-                          onClick={() => setChangePasswordOpen((v) => !v)}
-                        >
-                          {changePasswordOpen ? 'إلغاء التغيير' : 'تغيير كلمة المرور'}
-                        </Button>
-                      </div>
-                      {changePasswordOpen && (
-                        <div className="mt-3 space-y-1.5">
-                          <Label htmlFor="password">كلمة المرور الجديدة</Label>
-                          <div className="relative">
-                            <Input
-                              id="password"
-                              name="password"
-                              type={showPassword ? 'text' : 'password'}
-                              placeholder="اتركها فارغة للإبقاء على الحالية"
-                              className="pe-9"
-                              dir="ltr"
-                            />
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              className="absolute end-1 top-1/2 -translate-y-1/2 size-7"
-                              onClick={() => setShowPassword((v) => !v)}
-                            >
-                              {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleAvatarFile}
+                  />
+                </div>
+              </div>
+            </div>
 
-                  <div className="md:col-span-2 flex items-center gap-6 pt-2">
-                    <div className="flex items-center gap-2">
-                      <Switch id="active" name="active" defaultChecked={editing?.active ?? true} />
-                      <Label htmlFor="active">نشط</Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Switch id="mfaEnabled" name="mfaEnabled" defaultChecked={editing?.mfaEnabled ?? false} />
-                      <Label htmlFor="mfaEnabled">تفعيل التحقق الثنائي (MFA)</Label>
-                    </div>
+            {/* Second Block: Password & Security */}
+            <div className="border border-slate-200 dark:border-slate-700/80 rounded-xl p-4 bg-white dark:bg-[#0e1633]/70 shadow-xs space-y-3.5">
+              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold text-xs border-b border-slate-200 dark:border-slate-800 pb-2">
+                <KeyRound className="size-4 text-blue-600 dark:text-blue-400" />
+                <span>{isAr ? 'إعادة تعيين كلمة المرور وبيانات الأمان' : 'Security & Password Credentials'}</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Password */}
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold flex items-center gap-1">
+                    <span>{isAr ? 'كلمة المرور' : 'Password'}</span>
+                    {!editing && <span className="text-rose-500">*</span>}
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      type={showPassword ? 'text' : 'password'}
+                      value={formData.password}
+                      onChange={(e) => setFormData((p) => ({ ...p, password: e.target.value }))}
+                      placeholder={editing ? (isAr ? '•••••••• (اتركها فارغة للإبقاء على الحالية)' : '•••••••• (leave empty to keep current)') : '••••••••'}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 pe-8 font-mono"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute end-2 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                    </button>
                   </div>
                 </div>
-              </ScrollArea>
-              <DialogFooter className="mt-4">
-                <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>إلغاء</Button>
-                <Button type="submit" disabled={saveMutation.isPending}>
-                  {saveMutation.isPending ? 'جاري الحفظ...' : 'حفظ'}
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogBody>
+
+                {/* Confirm Password */}
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold">
+                    <span>{isAr ? 'تأكيد كلمة المرور' : 'Confirm Password'}</span>
+                  </Label>
+                  <Input
+                    type={showPassword ? 'text' : 'password'}
+                    value={formData.confirmPassword}
+                    onChange={(e) => setFormData((p) => ({ ...p, confirmPassword: e.target.value }))}
+                    placeholder="••••••••"
+                    className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-mono"
+                    dir="ltr"
+                  />
+                </div>
+
+                {/* Email */}
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold flex items-center gap-1">
+                    <span>{isAr ? 'البريد الإلكتروني' : 'Email'}</span>
+                    <span className="text-rose-500">*</span>
+                  </Label>
+                  <Input
+                    type="email"
+                    value={formData.email}
+                    onChange={(e) => setFormData((p) => ({ ...p, email: e.target.value }))}
+                    placeholder="user@orminal.com"
+                    className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-mono"
+                    dir="ltr"
+                    required
+                  />
+                </div>
+
+                {/* Phone */}
+                <div className="space-y-1">
+                  <Label className="text-xs text-slate-700 dark:text-slate-200 font-semibold">
+                    <span>{isAr ? 'رقم الجوال' : 'Mobile Phone'}</span>
+                  </Label>
+                  <Input
+                    value={formData.phone}
+                    onChange={(e) => setFormData((p) => ({ ...p, phone: e.target.value }))}
+                    placeholder="... 967+"
+                    className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-mono"
+                    dir="ltr"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Third Block: Access Windows (Side by Side) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Daily Time Window (Access Time Window) */}
+              <div className="border border-slate-200 dark:border-slate-700/80 rounded-xl p-4 bg-white dark:bg-[#0e1633]/70 shadow-xs space-y-3">
+                <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold text-xs border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <Clock className="size-4 text-blue-600 dark:text-blue-400" />
+                  <span>{isAr ? 'صلاحية الوقت اليومي (Access Time Window)' : 'Daily Time Window'}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'من وقت' : 'From Time'}</Label>
+                    <Input
+                      type="time"
+                      value={formData.validFromTime}
+                      onChange={(e) => setFormData((p) => ({ ...p, validFromTime: e.target.value }))}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'إلى وقت' : 'To Time'}</Label>
+                    <Input
+                      type="time"
+                      value={formData.validToTime}
+                      onChange={(e) => setFormData((p) => ({ ...p, validToTime: e.target.value }))}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Date Window (Access Date Window) */}
+              <div className="border border-slate-200 dark:border-slate-700/80 rounded-xl p-4 bg-white dark:bg-[#0e1633]/70 shadow-xs space-y-3">
+                <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold text-xs border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <Calendar className="size-4 text-blue-600 dark:text-blue-400" />
+                  <span>{isAr ? 'صلاحية التاريخ (Access Date Window)' : 'Access Date Window'}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'من تاريخ' : 'From Date'}</Label>
+                    <Input
+                      type="date"
+                      value={formData.validFromDate}
+                      onChange={(e) => setFormData((p) => ({ ...p, validFromDate: e.target.value }))}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'إلى تاريخ' : 'To Date'}</Label>
+                    <Input
+                      type="date"
+                      value={formData.validToDate}
+                      onChange={(e) => setFormData((p) => ({ ...p, validToDate: e.target.value }))}
+                      className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Fourth Block: Default Data & Pricing Limits */}
+            <div className="border border-slate-200 dark:border-slate-700/80 rounded-xl p-4 bg-white dark:bg-[#0e1633]/70 shadow-xs space-y-3">
+              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold text-xs border-b border-slate-200 dark:border-slate-800 pb-2">
+                <DollarSign className="size-4 text-blue-600 dark:text-blue-400" />
+                <span>{isAr ? 'البيانات الإفتراضية وحدود التسعيرة' : 'Default Data & Pricing Limits'}</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'مستوى التسعيرة الإفتراضي' : 'Default Price Level'}</Label>
+                  <Select
+                    value={formData.defaultPriceLevel}
+                    onValueChange={(val) => setFormData((p) => ({ ...p, defaultPriceLevel: val }))}
+                    dir={isAr ? 'rtl' : 'ltr'}
+                  >
+                    <SelectTrigger className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent dir={isAr ? 'rtl' : 'ltr'} className="bg-white dark:bg-[#0e1633] border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 shadow-lg">
+                      <SelectItem value="retail">{isAr ? 'تجزئة' : 'Retail'}</SelectItem>
+                      <SelectItem value="wholesale">{isAr ? 'جملة' : 'Wholesale'}</SelectItem>
+                      <SelectItem value="special">{isAr ? 'خاص' : 'Special'}</SelectItem>
+                      <SelectItem value="distributor">{isAr ? 'موزع' : 'Distributor'}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'الحد الأدنى للتسعيرة' : 'Min Price Limit'}</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={formData.minPriceLimit}
+                    onChange={(e) => setFormData((p) => ({ ...p, minPriceLimit: e.target.value }))}
+                    className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 text-center font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-slate-600 dark:text-slate-300">{isAr ? 'الحد الأعلى للتسعيرة' : 'Max Price Limit'}</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={formData.maxPriceLimit}
+                    onChange={(e) => setFormData((p) => ({ ...p, maxPriceLimit: e.target.value }))}
+                    className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100 text-center font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Fifth Block: Manager & Active/MFA Switches */}
+            <div className="border border-slate-200 dark:border-slate-700/80 rounded-xl p-3 bg-white dark:bg-[#0e1633]/70 shadow-xs flex flex-wrap items-center justify-between gap-4">
+              <div className="flex-1 min-w-[220px] space-y-1">
+                <Label className="text-xs text-slate-700 dark:text-slate-300">{isAr ? 'المدير المباشر' : 'Direct Manager'}</Label>
+                <Select
+                  value={formData.managerId || '_none'}
+                  onValueChange={(val) =>
+                    setFormData((p) => ({
+                      ...p,
+                      managerId: val === '_none' ? '' : val,
+                    }))
+                  }
+                  dir={isAr ? 'rtl' : 'ltr'}
+                >
+                  <SelectTrigger className="h-9 text-xs bg-white dark:bg-[#0b1228] border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-100">
+                    <SelectValue placeholder={isAr ? 'اختر المدير المباشر إن وجد' : 'Select direct manager'} />
+                  </SelectTrigger>
+                  <SelectContent dir={isAr ? 'rtl' : 'ltr'} className="bg-white dark:bg-[#0e1633] border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 shadow-lg">
+                    <SelectItem value="_none">{isAr ? '-- بدون مدير مباشر --' : '-- None --'}</SelectItem>
+                    {users
+                      .filter((u) => !editing || u.id !== editing.id)
+                      .map((u) => (
+                        <SelectItem key={u.id} value={u.id}>
+                          {u.nameAr} ({u.username})
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center gap-6 pt-2">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="modal-active"
+                    checked={formData.active}
+                    onCheckedChange={(checked) => setFormData((p) => ({ ...p, active: checked }))}
+                  />
+                  <Label htmlFor="modal-active" className="text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                    {isAr ? 'حساب نشط' : 'Active Account'}
+                  </Label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="modal-mfa"
+                    checked={formData.mfaEnabled}
+                    onCheckedChange={(checked) => setFormData((p) => ({ ...p, mfaEnabled: checked }))}
+                  />
+                  <Label htmlFor="modal-mfa" className="text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                    {isAr ? 'تفعيل التحقق الثنائي (MFA)' : 'Enable MFA'}
+                  </Label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Dialog Footer - Save (Left) / Cancel (Right) */}
+          <div className="bg-slate-100/90 dark:bg-[#080d1d] border-t border-slate-200 dark:border-slate-800 px-6 py-3.5 flex items-center justify-between">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDialogOpen(false)}
+              className="bg-white hover:bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-800/80 dark:hover:bg-slate-700 dark:text-slate-300 dark:border-slate-700 px-6 h-9 rounded-lg cursor-pointer shadow-xs"
+            >
+              {isAr ? 'إلغاء' : 'Cancel'}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => handleFormSubmit()}
+              disabled={saveMutation.isPending}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-8 h-9 rounded-lg shadow-sm cursor-pointer"
+            >
+              {saveMutation.isPending ? (isAr ? 'جاري الحفظ...' : 'Saving...') : (isAr ? 'حفظ' : 'Save')}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
-    </ModuleShell>
+    </ModuleShell >
   )
 }

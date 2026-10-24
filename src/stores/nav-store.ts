@@ -6,7 +6,7 @@ import { persist } from 'zustand/middleware'
 export type ModuleKey =
   // Platform
   | 'dashboard' | 'profile' | 'users' | 'roles' | 'audit-logs' | 'notifications' | 'settings' | 'system-config'
-  | 'user-groups' | 'user-data' | 'transaction-privileges' | 'screen-privileges' | 'input-privileges' | 'view-privileges' | 'audit-control'
+  | 'user-groups' | 'transaction-privileges' | 'screen-privileges' | 'input-privileges' | 'view-privileges'
   | 'system-settings' | 'sequence-doc-types' | 'transaction-sequences' | 'system-alerts' | 'default-transaction-data'
   // System Configuration Domains & Sub-branches
   | 'org-structure'

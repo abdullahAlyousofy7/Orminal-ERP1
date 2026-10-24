@@ -388,12 +388,10 @@ const NAV: NavGroup[] = [
         icon: ShieldCheck,
         items: [
           { key: 'user-groups', labelKey: 'module.user-groups', icon: UsersRound },
-          { key: 'user-data', labelKey: 'module.user-data', icon: UserCircle },
           { key: 'transaction-privileges', labelKey: 'module.transaction-privileges', icon: FileCheck },
           { key: 'screen-privileges', labelKey: 'module.screen-privileges', icon: LayoutList },
           { key: 'input-privileges', labelKey: 'module.input-privileges', icon: FileInput },
           { key: 'view-privileges', labelKey: 'module.view-privileges', icon: Search },
-          { key: 'audit-control', labelKey: 'module.audit-control', icon: ScrollText },
         ],
       },
     ],

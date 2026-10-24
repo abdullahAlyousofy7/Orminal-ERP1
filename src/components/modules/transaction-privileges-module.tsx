@@ -56,7 +56,7 @@ export default function TransactionPrivilegesModule() {
   const { data: usersResponse } = useQuery({
     queryKey: ['users-for-tx-privileges'],
     queryFn: async () => {
-      const res = await fetch('/api/erp/permissions/user-data?pageSize=50')
+      const res = await fetch('/api/erp/users?pageSize=100')
       if (!res.ok) return { data: [] }
       return res.json()
     },
